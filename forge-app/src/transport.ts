@@ -1,6 +1,6 @@
 import { channelFor, type Envelope, envelopeSize, type Payload, type Policy, retransmitDelayMs, seal } from "@tb/protocol";
-import { withLock } from "./lock.js";
-import { relay } from "./relay.js";
+import { withLock } from "./lock";
+import { relay } from "./relay";
 import {
   deleteOutboxEntry,
   getConnectionKeys,
@@ -10,7 +10,7 @@ import {
   type LocalConnection,
   setOutboxEntry,
   setOutboxMeta,
-} from "./state.js";
+} from "./state";
 
 export const EPOCH = 0; // key rotation arrives in phase 4
 

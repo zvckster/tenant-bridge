@@ -1,6 +1,6 @@
 import { fetch, webTrigger } from "@forge/api";
 import { generateIdentity, RelayClient, type Transport } from "@tb/protocol";
-import { getIdentity, type Identity, setIdentity } from "./state.js";
+import { getIdentity, type Identity, setIdentity } from "./state";
 
 // Set with: forge variables set RELAY_URL https://relay.example.com
 const relayUrl = () => {

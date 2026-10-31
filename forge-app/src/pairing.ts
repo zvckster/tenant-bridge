@@ -11,7 +11,7 @@ import {
   type Policy,
   PolicySchema,
 } from "@tb/protocol";
-import { relay } from "./relay.js";
+import { relay } from "./relay";
 import {
   deleteConnectionKeys,
   deleteInvite,
@@ -26,8 +26,8 @@ import {
   setConnectionKeys,
   setInvite,
   setPairSecret,
-} from "./state.js";
-import { send } from "./sync.js";
+} from "./state";
+import { send } from "./sync";
 
 const APP_VERSION = "0.1.0";
 

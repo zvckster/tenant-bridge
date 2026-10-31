@@ -1,8 +1,8 @@
 import api, { route, type WebTriggerResponse } from "@forge/api";
 import Resolver from "@forge/resolver";
-import { acceptInvite, approve, createInvite, decline, refreshConnections, revoke, savePolicy } from "./pairing.js";
-import { relay } from "./relay.js";
-import { onLocalAttachment, onLocalComment, onLocalCommentDeleted, onLocalIssueChange, processMailbox, tick } from "./sync.js";
+import { acceptInvite, approve, createInvite, decline, refreshConnections, revoke, savePolicy } from "./pairing";
+import { relay } from "./relay";
+import { onLocalAttachment, onLocalComment, onLocalCommentDeleted, onLocalIssueChange, processMailbox, tick } from "./sync";
 
 // ---------------------------------------------------------------- admin UI backend
 

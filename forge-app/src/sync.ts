@@ -21,11 +21,11 @@ import {
   takeReady,
   type TicketRef,
 } from "@tb/protocol";
-import { sanitizeAdf, withAuthor } from "./adf.js";
-import { acceptChunk, acceptOffer, syncAttachments } from "./attachments.js";
-import * as jira from "./jira.js";
-import { LockBusyError, withLock } from "./lock.js";
-import { relay } from "./relay.js";
+import { sanitizeAdf, withAuthor } from "./adf";
+import { acceptChunk, acceptOffer, syncAttachments } from "./attachments";
+import * as jira from "./jira";
+import { LockBusyError, withLock } from "./lock";
+import { relay } from "./relay";
 import {
   getCommentOrigin,
   getConnectionKeys,
@@ -43,8 +43,8 @@ import {
   setInbox,
   setReconcileState,
   unlinkComment,
-} from "./state.js";
-import { type ActiveConnection, ackOutbox, activeConnections, EPOCH, Rejected, retransmit, send } from "./transport.js";
+} from "./state";
+import { type ActiveConnection, ackOutbox, activeConnections, EPOCH, Rejected, retransmit, send } from "./transport";
 
 export { send };
 

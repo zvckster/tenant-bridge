@@ -7,7 +7,7 @@ import {
   type TicketRef,
   toB64u,
 } from "@tb/protocol";
-import * as jira from "./jira.js";
+import * as jira from "./jira";
 import {
   deleteChunk,
   deleteIncoming,
@@ -20,8 +20,8 @@ import {
   markAttachmentSent,
   setChunk,
   setIncoming,
-} from "./state.js";
-import { type ActiveConnection, Rejected, send } from "./transport.js";
+} from "./state";
+import { type ActiveConnection, Rejected, send } from "./transport";
 
 /**
  * Sends the partner every attachment of one of my issues (or of my mirror of theirs)
