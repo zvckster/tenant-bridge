@@ -41,7 +41,7 @@ export function plainText(doc: unknown, max = 80): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-/** "31 Oct, 10:42 UTC": the author's original time, since Jira can't backdate comments. */
+/** "31 Oct, 10:42 UTC". */
 export function formatTime(iso: string | undefined): string | undefined {
   if (!iso) return undefined;
   const d = new Date(iso);
@@ -52,46 +52,65 @@ export function formatTime(iso: string | undefined): string | undefined {
   return `${d.getUTCDate()} ${month}, ${hh}:${mm} UTC`;
 }
 
+/** Only comments that arrive this much later than written show their original time. */
+export const SHOW_TIME_AFTER_MS = 2 * 60 * 1000;
+
+const GREY = { type: "textColor", attrs: { color: "#6b778c" } };
+
 export interface Attribution {
-  author: string; // e.g. "Ayman · Zvcks"
+  /** As sent by the partner, e.g. "Ayman · Zvcks"; only the person's name is shown. */
+  author: string;
   createdAt?: string;
   /** Set when this reply crossed another comment in transit: what it actually answers. */
-  crossed?: { author?: string; snippet?: string };
+  crossed?: { snippet?: string };
+  now?: number;
 }
 
+/** The person's name from a partner label ("Ayman · Zvcks" → "Ayman"; "Zvcks team" stays). */
+export const displayName = (label: string) => label.split(" · ")[0]!.trim();
+
 /**
- * Puts the partner's author and original time at the start of the comment's first line
- * ("**Ayman · Zvcks** · 31 Oct, 10:42 UTC — text…"), since the app posts it as itself.
- * A reply that crossed newer comments in transit gets a "↪ reply to …" line on top.
+ * Keeps synced comments close to a native one: "**Ayman** text", since the app posts
+ * them as itself. A small grey note is added only when it matters: the original time
+ * if the comment arrived late, and "↩ Re: …" if it crossed newer comments in transit.
  */
 export function withAttribution(a: Attribution, body: unknown): unknown {
   const doc = (body as Node | undefined) ?? { type: "doc", version: 1, content: [] };
   const content = [...(doc.content ?? [])];
-  const time = formatTime(a.createdAt);
-  const lead: Node[] = [
-    { type: "text", text: a.author, marks: [{ type: "strong" }] },
-    { type: "text", text: `${time ? ` · ${time}` : ""} — ` },
-  ];
+  const lead: Node[] = [{ type: "text", text: displayName(a.author), marks: [{ type: "strong" }] }, { type: "text", text: " " }];
   if (content[0]?.type === "paragraph") {
     content[0] = { ...content[0], content: [...lead, ...(content[0].content ?? [])] };
   } else {
     content.unshift({ type: "paragraph", content: lead });
   }
+
+  const written = a.createdAt ? Date.parse(a.createdAt) : NaN;
+  if (!Number.isNaN(written) && (a.now ?? Date.now()) - written > SHOW_TIME_AFTER_MS) {
+    const last = content[content.length - 1]!;
+    const note: Node = { type: "text", text: ` · sent ${formatTime(a.createdAt)}`, marks: [GREY] };
+    if (last.type === "paragraph") content[content.length - 1] = { ...last, content: [...(last.content ?? []), note] };
+    else content.push({ type: "paragraph", content: [note] });
+  }
+
   if (a.crossed) {
-    const who = a.crossed.author ? ` ${a.crossed.author}:` : "";
-    const text = a.crossed.snippet ? `↪ reply to${who} “${a.crossed.snippet}”` : "↪ written before the comments above";
-    content.unshift({ type: "paragraph", content: [{ type: "text", text, marks: [{ type: "em" }] }] });
+    const text = a.crossed.snippet ? `↩ Re: “${a.crossed.snippet}”` : "↩ Written before the comments above";
+    content.unshift({ type: "paragraph", content: [{ type: "text", text, marks: [{ type: "em" }, GREY] }] });
   }
   return { ...doc, type: "doc", version: 1, content };
 }
 
 /**
- * Who wrote a comment and what it says, without our attribution line: for a synced
- * comment ("Ayman · Zvcks · 31 Oct, 10:42 UTC — text") the partner's name is in the text.
+ * The words of a comment for a "↩ Re:" quote, without our own notes: drops the grey
+ * lines (crossing note, sent time) and the bold author lead of a synced comment.
  */
-export function quoteOf(body: unknown, localAuthor: string, max = 80): { author: string; snippet: string } {
-  const text = plainText(body, 1000).replace(/^↪ (?:reply to .*?” |written before the comments above )/, "");
-  const m = text.match(/^(.+?) · .+? — (.*)$/s);
-  const [author, rest] = m ? [m[1]!.trim(), m[2]!.trim()] : [localAuthor, text];
-  return { author, snippet: rest.length > max ? `${rest.slice(0, max - 1)}…` : rest };
+export function quoteOf(body: unknown, max = 60): { snippet: string } {
+  const doc = body as Node | undefined;
+  const isGrey = (n: Node) => Array.isArray(n.marks) && (n.marks as Array<{ type: string }>).some((m) => m.type === "textColor");
+  const paras = (doc?.content ?? []).filter((p) => !(p.content ?? []).every(isGrey));
+  const first = paras[0];
+  if (first?.content?.[0] && Array.isArray(first.content[0].marks) && (first.content[0].marks as Array<{ type: string }>).some((m) => m.type === "strong")) {
+    paras[0] = { ...first, content: first.content.slice(1) };
+  }
+  const text = plainText({ type: "doc", content: paras.map((p) => ({ ...p, content: (p.content ?? []).filter((n) => !isGrey(n)) })) }, 1000);
+  return { snippet: text.length > max ? `${text.slice(0, max - 1)}…` : text };
 }

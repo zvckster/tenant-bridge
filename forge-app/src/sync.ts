@@ -310,7 +310,7 @@ async function crossedInTransit(
   }
   if (!unseen) return undefined;
   const seen = seenIdx >= 0 ? thread[seenIdx] : undefined;
-  return seen ? quoteOf(seen.body, seen.authorName) : {};
+  return seen ? quoteOf(seen.body) : {};
 }
 
 const FIELD_TO_JIRA: Record<string, (v: unknown) => Record<string, unknown>> = {
