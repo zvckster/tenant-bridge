@@ -140,31 +140,52 @@ async function shareTargets(issueId: string, me: string): Promise<Array<{ conn: 
 export async function onLocalComment(issueId: string, commentId: string): Promise<void> {
   if (await getCommentOrigin(commentId)) return;
   const { identity } = await relay();
-  const comment = await jira.getComment(issueId, commentId);
-
   for (const { conn, ref } of await shareTargets(issueId, identity.installId)) {
-    if (!commentShareable(conn.policy, comment)) continue;
-    // The newest shared comment before this one is what its author saw when writing.
-    const thread = (await getThread(conn.id, issueId)).filter((id) => id !== comment.id);
-    const prev = thread[thread.length - 1];
-    let after: Origin | null = null;
-    if (prev) {
-      const o = await getCommentOrigin(prev);
-      after = o ? { tenant: o.tenant, id: o.id } : { tenant: identity.installId, id: prev };
-    }
+    await syncComments(conn, issueId, ref, identity.installId, commentId);
+  }
+}
+
+/**
+ * Sends the partner local public comments it doesn't have yet (or just `onlyId`).
+ * Also the catch-up path for comment events Jira delivered late or never: re-sending
+ * is safe, since the receiver upserts by origin.
+ */
+async function syncComments(conn: ActiveConnection, issueId: string, ref: TicketRef, me: string, onlyId?: string): Promise<void> {
+  const thread = await jira.listComments(issueId);
+  const sent = new Set(await getThread(conn.id, issueId));
+  for (let i = 0; i < thread.length; i++) {
+    const c = thread[i]!;
+    if (onlyId ? c.id !== onlyId : sent.has(c.id)) continue;
+    if (!commentShareable(conn.policy, { id: c.id, authorName: c.authorName, visibility: c.visibility })) continue;
+    if (await getCommentOrigin(c.id)) continue; // the partner's own comment
     await send(conn, {
       type: "comment.upsert",
       opId: crypto.randomUUID(),
       ticket: ref,
-      origin: { tenant: identity.installId, id: comment.id },
-      author: authorLabel(conn.policy, comment.authorName),
-      body: sanitizeAdf(comment.body),
-      updatedAt: comment.updated,
-      createdAt: comment.created,
-      after,
+      origin: { tenant: me, id: c.id },
+      author: authorLabel(conn.policy, c.authorName),
+      body: sanitizeAdf(c.body),
+      updatedAt: c.updated,
+      createdAt: c.created,
+      after: await lastSeenBefore(conn, thread.slice(0, i), me),
     });
-    await appendToThread(conn.id, issueId, comment.id);
+    await appendToThread(conn.id, issueId, c.id);
   }
+}
+
+/**
+ * The newest comment the author could see when writing: the latest earlier comment that
+ * is shared (public local, or received from the partner). Read from Jira itself, so it
+ * doesn't depend on comment events having been processed yet.
+ */
+async function lastSeenBefore(conn: ActiveConnection, earlier: jira.ThreadComment[], me: string): Promise<Origin | null> {
+  for (let i = earlier.length - 1; i >= 0; i--) {
+    const c = earlier[i]!;
+    const o = await getCommentOrigin(c.id);
+    if (o) return { tenant: o.tenant, id: o.id };
+    if (commentShareable(conn.policy, { id: c.id, authorName: c.authorName, visibility: c.visibility })) return { tenant: me, id: c.id };
+  }
+  return null;
 }
 
 /** A local user deleted their comment: remove the partner's copy. */
@@ -273,16 +294,23 @@ async function crossedInTransit(
   after: Origin | null,
   me: string,
 ): Promise<{ snippet?: string } | undefined> {
-  const thread = await getThread(conn.id, issueId); // shared comments only
   const seenLocalId = after === null ? undefined : after.tenant === me ? after.id : await getLocalCommentId(conn.id, after);
-  const since = seenLocalId === undefined ? thread : thread.slice(thread.indexOf(seenLocalId) + 1);
-  // Only our own newer comments matter: the partner's author has seen their side's comments.
+  // Read the real thread from Jira: our own comments may not have reached the app's
+  // records yet (comment events arrive late), but they are already on the ticket.
+  const thread = await jira.listComments(issueId);
+  const seenIdx = seenLocalId === undefined ? -1 : thread.findIndex((c) => c.id === seenLocalId);
+  const shared = new Set(await getThread(conn.id, issueId));
   let unseen = false;
-  for (const id of since) if (!(await getCommentOrigin(id))) unseen = true;
+  for (const c of thread.slice(seenIdx + 1)) {
+    if (await getCommentOrigin(c.id)) continue; // the partner's own side: their author saw it
+    if (!commentShareable(conn.policy, { id: c.id, authorName: c.authorName, visibility: c.visibility })) continue; // internal
+    // With no reference point, only count comments that were part of the shared thread.
+    if (seenIdx === -1 && !shared.has(c.id)) continue;
+    unseen = true;
+  }
   if (!unseen) return undefined;
-  if (!seenLocalId) return {};
-  const seen = (await jira.listComments(issueId)).find((c) => c.id === seenLocalId);
-  return { snippet: seen ? plainText(seen.body, 80) : undefined };
+  const seen = seenIdx >= 0 ? thread[seenIdx] : undefined;
+  return seen ? { snippet: plainText(seen.body, 80) } : {};
 }
 
 const FIELD_TO_JIRA: Record<string, (v: unknown) => Record<string, unknown>> = {
@@ -523,17 +551,43 @@ export async function reconcile(conn: ActiveConnection, me: string, now = Date.n
 
   // Overlap the window by 10 minutes so nothing falls between runs.
   const sinceMinutes = state ? (now - state.lastRunAt) / 60_000 + 10 : undefined;
-  const ids = await jira.searchIds(jira.scopeJql({ ...conn.policy.outbound, jql: outboundFilterJql(conn.policy) }, sinceMinutes), CATCH_UP_MAX);
-  for (const id of ids) await pushSnapshot(conn, id, me);
+  const issues = await jira.searchIssues(jira.scopeJql({ ...conn.policy.outbound, jql: outboundFilterJql(conn.policy) }, sinceMinutes), CATCH_UP_MAX);
+  for (const i of issues) {
+    await pushSnapshot(conn, i.id, me);
+    await syncComments(conn, i.id, { owner: me, id: i.id, key: i.key }, me);
+  }
 
   const mirrors = await listMirrors(conn.id);
-  for (const m of mirrors) await syncAttachments(conn, m.localIssueId, m.ref, me);
+  for (const m of mirrors) {
+    await syncAttachments(conn, m.localIssueId, m.ref, me);
+    await syncComments(conn, m.localIssueId, m.ref, me);
+  }
   for (let i = 0; i < mirrors.length; i += MANIFEST_CHUNK) {
     const items = mirrors.slice(i, i + MANIFEST_CHUNK).map((m) => ({ ref: m.ref, hash: m.hash ?? "" }));
     await send(conn, { type: "manifest", items });
   }
   await setReconcileState(conn.id, { lastRunAt: now });
   return true;
+}
+
+const CATCH_UP_WINDOW_MIN = 10;
+
+/**
+ * Every tick: comments on recently updated shared tickets and mirrors that the partner
+ * doesn't have yet. Covers Jira comment events that arrive late or never.
+ */
+async function catchUpComments(conn: ActiveConnection, me: string): Promise<void> {
+  const filter = outboundFilterJql(conn.policy);
+  const mine = await jira.searchIssues(jira.scopeJql({ ...conn.policy.outbound, jql: filter }, CATCH_UP_WINDOW_MIN), 50);
+  for (const i of mine) await syncComments(conn, i.id, { owner: me, id: i.id, key: i.key }, me);
+
+  const mirrorsJql =
+    `project in (${jira.jqlString(conn.policy.inbound.targetSpace)}) AND labels = ${jira.jqlString(MIRROR_LABEL)} ` +
+    `AND updated >= "-${CATCH_UP_WINDOW_MIN}m"`;
+  for (const i of await jira.searchIssues(mirrorsJql, 50)) {
+    const m = await getMirrorByLocal(i.id);
+    if (m?.connectionId === conn.id) await syncComments(conn, i.id, m.ref, me);
+  }
 }
 
 /** Scheduled: catch up on mail, retry what a Jira outage held back, retransmit, report gaps. */
@@ -553,5 +607,10 @@ export async function tick(): Promise<void> {
     const missing = missingSeqs(await getInbox(conn.id));
     if (missing.length > 0) await send(conn, { type: "nack", missing });
     await reconcile(conn, identity.installId);
+    try {
+      await catchUpComments(conn, identity.installId);
+    } catch (err) {
+      console.warn(`comment catch-up failed on ${conn.id}: ${String(err)}`);
+    }
   }
 }

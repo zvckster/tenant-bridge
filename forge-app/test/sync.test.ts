@@ -186,6 +186,26 @@ describe("two tenants through the real relay", () => {
     expect(tail(issue.comments, 1)[0]).toMatch(/^Gina · Globex/);
   });
 
+  it("catches up comments whose Jira event was late or never came, and still labels the crossing", async () => {
+    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
+    const mirror = mirrorsIn(globex)[0]!;
+    await userComments(acme, issue, "Is it fixed?", "Alice");
+    await deliver();
+
+    // Gina answers, but Jira never tells the Globex app (event dropped).
+    globex.jira.addComment(mirror, doc("Fixed this morning"), "Gina");
+    // Meanwhile Alice follows up; it reaches Globex before the answer is ever sent.
+    await userComments(acme, issue, "Any update?", "Alice");
+    await deliver();
+    const lastOnGlobex = rawText(mirror.comments[mirror.comments.length - 1]!.body);
+    expect(lastOnGlobex).toMatch(/^↪ reply to “.*Is it fixed\?” Alice · Acme/); // crossed Gina's answer
+
+    // The next scheduled tick finds and sends the answer that had no event.
+    await as(globex, () => onTick());
+    await deliver();
+    expect(issue.comments.map((c) => textOf(c.body))).toContain("Gina (Globex) Fixed this morning");
+  });
+
   it("applies allowed status requests and reverts refused ones", async () => {
     const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
     const mirror = mirrorsIn(globex)[0]!;

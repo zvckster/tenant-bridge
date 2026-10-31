@@ -58,22 +58,24 @@ export async function matchesJql(issueKey: string, jql: string | undefined): Pro
   return res.issues.length > 0;
 }
 
-/** Ids of issues matching `jql`, following nextPageToken up to `max`. */
-export async function searchIds(jql: string, max = 500): Promise<string[]> {
-  const ids: string[] = [];
+/** Issues matching `jql` (id and key), following nextPageToken up to `max`. */
+export async function searchIssues(jql: string, max = 500): Promise<Array<{ id: string; key: string }>> {
+  const out: Array<{ id: string; key: string }> = [];
   let nextPageToken: string | undefined;
   do {
-    const page = await jira<{ issues: Array<{ id: string }>; nextPageToken?: string }>(route`/rest/api/3/search/jql`, {
+    const page = await jira<{ issues: Array<{ id: string; key: string }>; nextPageToken?: string }>(route`/rest/api/3/search/jql`, {
       method: "POST",
-      body: { jql, maxResults: Math.min(100, max - ids.length), fields: ["id"], nextPageToken },
+      body: { jql, maxResults: Math.min(100, max - out.length), fields: ["id"], nextPageToken },
     });
-    ids.push(...page.issues.map((i) => i.id));
+    out.push(...page.issues.map((i) => ({ id: String(i.id), key: i.key })));
     nextPageToken = page.nextPageToken;
-  } while (nextPageToken && ids.length < max);
-  return ids;
+  } while (nextPageToken && out.length < max);
+  return out;
 }
 
-const jqlString = (s: string) => `"${s.replace(/["\\]/g, "\\$&")}"`;
+export const searchIds = async (jql: string, max = 500) => (await searchIssues(jql, max)).map((i) => i.id);
+
+export const jqlString = (s: string) => `"${s.replace(/["\\]/g, "\\$&")}"`;
 
 /** JQL for everything a policy shares, optionally only issues updated in the last N minutes. */
 export function scopeJql(scope: { spaces: string[]; issueTypes: string[]; jql?: string }, updatedWithinMinutes?: number): string {
@@ -99,12 +101,28 @@ export async function getComment(
   };
 }
 
+export interface ThreadComment {
+  id: string;
+  created: string;
+  updated: string;
+  authorName: string;
+  body: unknown;
+  visibility: { type: string; value: string } | null;
+}
+
 /** The most recent comments on an issue, oldest first. */
-export async function listComments(issueId: string, max = 50): Promise<Array<{ id: string; created: string; body: unknown }>> {
-  const res = await jira<{ comments: Array<{ id: string; created: string; body: unknown }> }>(
-    route`/rest/api/3/issue/${issueId}/comment?orderBy=-created&maxResults=${max}`,
-  );
-  return res.comments.map((c) => ({ id: String(c.id), created: c.created, body: c.body })).reverse();
+export async function listComments(issueId: string, max = 50): Promise<ThreadComment[]> {
+  const res = await jira<{ comments: Array<any> }>(route`/rest/api/3/issue/${issueId}/comment?orderBy=-created&maxResults=${max}`);
+  return res.comments
+    .map((c) => ({
+      id: String(c.id),
+      created: c.created,
+      updated: c.updated ?? c.created,
+      authorName: c.author?.displayName ?? "Unknown",
+      body: c.body,
+      visibility: c.visibility ?? null,
+    }))
+    .reverse();
 }
 
 export async function createIssue(spaceKey: string, issueType: string, fields: Record<string, unknown>): Promise<string> {

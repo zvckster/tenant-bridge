@@ -202,7 +202,15 @@ export class FakeJira {
           const newestFirst = (q.get("orderBy") ?? "").startsWith("-");
           const all = newestFirst ? [...issue.comments].reverse() : issue.comments;
           const max = Number(q.get("maxResults") ?? 50);
-          return { status: 200, json: { comments: all.slice(0, max).map((x) => ({ id: x.id, created: x.created, body: x.body })) } };
+          const view = (x: FakeComment) => ({
+            id: x.id,
+            created: x.created,
+            updated: x.updated,
+            author: { displayName: x.author },
+            body: x.body,
+            visibility: x.visibility ?? undefined,
+          });
+          return { status: 200, json: { comments: all.slice(0, max).map(view) } };
         }
         if (!cid && method === "POST") {
           const c = this.addComment(issue, body.body, "Tenant Bridge (app)");
