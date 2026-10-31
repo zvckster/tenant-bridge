@@ -17,17 +17,15 @@ const globex = addTenant("globex", "globex.atlassian.net");
 const doc = (text: string) => ({ type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
 const rawText = (adf: any): string => JSON.stringify(adf).match(/"text":"([^"]*)"/g)?.map((m) => m.slice(8, -1)).join(" ") ?? "";
 const isGrey = (n: any) => (n.marks ?? []).some((m: any) => m.type === "textColor");
-/** A synced comment as "Alice: text" (bold author lead; grey notes left out). Others: plain text. */
+/** A synced comment as "Alice · Acme: text" (bold header line; grey notes left out). Others: plain text. */
 const textOf = (adf: any): string => {
   const paras = (adf?.content ?? []).filter((p: any) => !(p.content ?? []).every(isGrey));
-  const first = paras[0]?.content?.[0];
-  const body = (nodes: any[]) => nodes.filter((n) => !isGrey(n)).map((n) => n.text ?? "").join("").trim();
-  if (first && (first.marks ?? []).some((m: any) => m.type === "strong")) {
-    return `${first.text}: ${[body(paras[0].content.slice(1)), ...paras.slice(1).map((p: any) => body(p.content ?? []))].join(" ").trim()}`;
-  }
-  return rawText(adf);
+  const head = paras[0]?.content;
+  const isHeader = head?.length === 1 && (head[0].marks ?? []).some((m: any) => m.type === "strong");
+  if (!isHeader) return rawText(adf);
+  return `${head[0].text}: ${paras.slice(1).map((p: any) => (p.content ?? []).map((n: any) => n.text ?? "").join("")).join(" ").trim()}`;
 };
-/** The grey notes of a comment (crossing line, sent time). */
+/** The grey notes of a comment (crossing line, time). */
 const notesOf = (adf: any): string[] => (adf?.content ?? []).flatMap((p: any) => (p.content ?? []).filter(isGrey).map((n: any) => n.text));
 
 /** Runs queued Forge async events (the job worker) for one tenant. */
@@ -151,36 +149,26 @@ describe("two tenants through the real relay", () => {
     await userComments(acme, issue, "We are on it", "Alice");
     await userComments(acme, issue, "Internal: blame Bob", "Alice", { type: "role", value: "Developers" });
     await deliver();
-    expect(mirror.comments.map((c) => textOf(c.body))).toEqual(["Alice: We are on it"]);
+    expect(mirror.comments.map((c) => textOf(c.body))).toEqual(["Alice · Acme: We are on it"]);
 
     await userComments(globex, mirror, "Thanks, any ETA?", "Gina");
     await deliver();
-    expect(issue.comments.map((c) => textOf(c.body))).toContain("Gina: Thanks, any ETA?");
+    expect(issue.comments.map((c) => textOf(c.body))).toContain("Gina · Globex: Thanks, any ETA?");
     // The partner comment was written by the app, so it must not echo back.
     expect(mirror.comments).toHaveLength(2);
   });
 
-  it("shows a synced comment like a native one: bold author, then the text", async () => {
+  it("lays a synced comment out as name · company, the text, then the grey time", async () => {
     const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
     const mirror = mirrorsIn(globex)[0]!;
     await userComments(acme, issue, "Format check", "Alice");
     await deliver();
-    const last = mirror.comments[mirror.comments.length - 1]!;
-    expect(last.body.content).toHaveLength(1); // one paragraph, no header
-    expect(last.body.content[0].content[0]).toMatchObject({ text: "Alice", marks: [{ type: "strong" }] });
-    expect(textOf(last.body)).toBe("Alice: Format check");
-    expect(notesOf(last.body)).toEqual([]); // arrived promptly: no time note
-  });
-
-  it("notes the original time only when a comment arrives late", async () => {
-    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
-    const mirror = mirrorsIn(globex)[0]!;
-    await userComments(acme, issue, "Sent during an outage", "Alice");
-    advance(5 * 60_000); // delivered five minutes later
-    await deliver();
-    const last = mirror.comments[mirror.comments.length - 1]!;
-    expect(textOf(last.body)).toBe("Alice: Sent during an outage");
-    expect(notesOf(last.body)[0]).toMatch(/^ · sent \d{1,2} \w{3}, \d\d:\d\d UTC$/);
+    const c = mirror.comments[mirror.comments.length - 1]!.body.content;
+    expect(c).toHaveLength(3);
+    expect(c[0].content).toEqual([{ type: "text", text: "Alice · Acme", marks: [{ type: "strong" }] }]);
+    expect(c[1].content[0].text).toBe("Format check");
+    expect(c[2].content[0].text).toMatch(/^\d{1,2} \w{3}, \d\d:\d\d UTC$/);
+    expect(c[2].content[0].marks[0].type).toBe("textColor");
   });
 
   it("labels replies that crossed in transit, on both sides", async () => {
@@ -199,15 +187,15 @@ describe("two tenants through the real relay", () => {
     const tail = (c: H.FakeComment[], n: number) => c.slice(-n).map((x) => rawText(x.body));
     // Acme sees Q1, Q2, (internal), then the answer: labelled as a reply to Q1.
     const answerOnAcme = tail(issue.comments, 1)[0]!;
-    expect(answerOnAcme).toMatch(/^↩ Re: “Question one\?” Gina/);
+    expect(answerOnAcme).toMatch(/^Gina · Globex ↩ Re: “Question one\?” Answer to one/);
     // Globex sees Q1, its answer, then Q2: labelled too, since Alice hadn't seen the answer.
     const q2OnGlobex = tail(mirror.comments, 1)[0]!;
-    expect(q2OnGlobex).toMatch(/^↩ Re: “Question one\?” Alice/);
+    expect(q2OnGlobex).toMatch(/^Alice · Acme ↩ Re: “Question one\?” Question two\?/);
 
     // An ordinary reply that didn't cross anything carries no label.
     await userComments(globex, mirror, "Answer to two", "Gina");
     await deliver();
-    expect(tail(issue.comments, 1)[0]).toMatch(/^Gina /);
+    expect(tail(issue.comments, 1)[0]).toMatch(/^Gina · Globex Answer to two/);
   });
 
   it("catches up comments whose Jira event was late or never came, and still labels the crossing", async () => {
@@ -222,12 +210,12 @@ describe("two tenants through the real relay", () => {
     await userComments(acme, issue, "Any update?", "Alice");
     await deliver();
     const lastOnGlobex = rawText(mirror.comments[mirror.comments.length - 1]!.body);
-    expect(lastOnGlobex).toMatch(/^↩ Re: “Is it fixed\?” Alice/); // crossed Gina's answer
+    expect(lastOnGlobex).toMatch(/^Alice · Acme ↩ Re: “Is it fixed\?” Any update\?/); // crossed Gina's answer
 
     // The next scheduled tick finds and sends the answer that had no event.
     await as(globex, () => onTick());
     await deliver();
-    expect(issue.comments.map((c) => textOf(c.body))).toContain("Gina: Fixed this morning");
+    expect(issue.comments.map((c) => textOf(c.body))).toContain("Gina · Globex: Fixed this morning");
   });
 
   it("applies allowed status requests and reverts refused ones", async () => {
@@ -266,12 +254,12 @@ describe("two tenants through the real relay", () => {
     // Simulate loss: the relay drops everything queued and the ping never arrives.
     await relayStore.expireMail(Number.MAX_SAFE_INTEGER);
     pings.length = 0;
-    expect(mirror.comments.map((c) => textOf(c.body))).not.toContain("Alice: Lost in transit");
+    expect(mirror.comments.map((c) => textOf(c.body))).not.toContain("Alice · Acme: Lost in transit");
 
     advance(2 * 60_000); // past the first retransmit delay
     await as(acme, () => onTick());
     await deliver();
-    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice: Lost in transit");
+    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice · Acme: Lost in transit");
   });
 
   it("keeps messages through a Jira outage and applies them later, in order", async () => {
@@ -282,13 +270,13 @@ describe("two tenants through the real relay", () => {
     await userComments(acme, issue, "second", "Alice");
     await deliver();
     const texts = () => mirror.comments.map((c) => textOf(c.body));
-    expect(texts()).not.toContain("Alice: first");
+    expect(texts()).not.toContain("Alice · Acme: first");
 
     await as(globex, () => onTick());
     await deliver();
     const all = texts();
-    expect(all.indexOf("Alice: first")).toBeGreaterThan(-1);
-    expect(all.indexOf("Alice: second")).toBeGreaterThan(all.indexOf("Alice: first"));
+    expect(all.indexOf("Alice · Acme: first")).toBeGreaterThan(-1);
+    expect(all.indexOf("Alice · Acme: second")).toBeGreaterThan(all.indexOf("Alice · Acme: first"));
   });
 
   it("reconciliation repairs changes that Jira never sent an event for", async () => {
@@ -315,12 +303,12 @@ describe("two tenants through the real relay", () => {
     const mirror = mirrorsIn(globex)[0]!;
     const c = await userComments(acme, issue, "Oops, wrong ticket", "Alice");
     await deliver();
-    expect(mirror.comments.map((x) => textOf(x.body))).toContain("Alice: Oops, wrong ticket");
+    expect(mirror.comments.map((x) => textOf(x.body))).toContain("Alice · Acme: Oops, wrong ticket");
 
     issue.comments = issue.comments.filter((x) => x.id !== c.id);
     await as(acme, () => onIssueEvent({ eventType: "avi:jira:deleted:comment", issue: { id: issue.id, key: issue.key }, comment: { id: c.id } }));
     await deliver();
-    expect(mirror.comments.map((x) => textOf(x.body))).not.toContain("Alice: Oops, wrong ticket");
+    expect(mirror.comments.map((x) => textOf(x.body))).not.toContain("Alice · Acme: Oops, wrong ticket");
   });
 
   it("does not send attachments while either side has them turned off", async () => {
@@ -420,7 +408,7 @@ describe("two tenants through the real relay", () => {
     acme.kv.set(`lock:outbox:${connectionId}`, { value: { owner: "dead-invocation", expiresAt: Date.now() - 1000 } });
     await userComments(acme, issue, "after a crash", "Alice");
     await deliver();
-    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice: after a crash");
+    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice · Acme: after a crash");
   });
 
   it("rules saved before newer policy fields existed still work", async () => {
@@ -432,7 +420,7 @@ describe("two tenants through the real relay", () => {
     delete stored.policy.outbound.labels;
     await userComments(acme, issue, "old rules", "Alice");
     await deliver();
-    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice: old rules");
+    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice · Acme: old rules");
   });
 
   it("an authentic but malformed message is skipped and reported, never blocking the rest", async () => {
@@ -453,7 +441,7 @@ describe("two tenants through the real relay", () => {
     });
     await userComments(acme, issue, "after the bad one", "Alice");
     await deliver();
-    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice: after the bad one");
+    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice · Acme: after the bad one");
   });
 
   it("admin page functions refuse non-admins", async () => {

@@ -52,65 +52,48 @@ export function formatTime(iso: string | undefined): string | undefined {
   return `${d.getUTCDate()} ${month}, ${hh}:${mm} UTC`;
 }
 
-/** Only comments that arrive this much later than written show their original time. */
-export const SHOW_TIME_AFTER_MS = 2 * 60 * 1000;
-
 const GREY = { type: "textColor", attrs: { color: "#6b778c" } };
 
 export interface Attribution {
-  /** As sent by the partner, e.g. "Ayman · Zvcks"; only the person's name is shown. */
+  /** As sent by the partner, e.g. "Ayman · Zvcks" (or "Zvcks team" when anonymous). */
   author: string;
   createdAt?: string;
   /** Set when this reply crossed another comment in transit: what it actually answers. */
   crossed?: { snippet?: string };
-  now?: number;
 }
 
-/** The person's name from a partner label ("Ayman · Zvcks" → "Ayman"; "Zvcks team" stays). */
-export const displayName = (label: string) => label.split(" · ")[0]!.trim();
-
 /**
- * Keeps synced comments close to a native one: "**Ayman** text", since the app posts
- * them as itself. A small grey note is added only when it matters: the original time
- * if the comment arrived late, and "↩ Re: …" if it crossed newer comments in transit.
+ * Lays a synced comment out like a message, since the app posts it as itself:
+ *
+ *   **Ayman · Zvcks**
+ *   ↩ Re: “…”            (grey, only if it crossed newer comments in transit)
+ *   the comment text
+ *   31 Oct, 15:34 UTC     (grey: when the author wrote it)
  */
 export function withAttribution(a: Attribution, body: unknown): unknown {
   const doc = (body as Node | undefined) ?? { type: "doc", version: 1, content: [] };
-  const content = [...(doc.content ?? [])];
-  const lead: Node[] = [{ type: "text", text: displayName(a.author), marks: [{ type: "strong" }] }, { type: "text", text: " " }];
-  if (content[0]?.type === "paragraph") {
-    content[0] = { ...content[0], content: [...lead, ...(content[0].content ?? [])] };
-  } else {
-    content.unshift({ type: "paragraph", content: lead });
-  }
-
-  const written = a.createdAt ? Date.parse(a.createdAt) : NaN;
-  if (!Number.isNaN(written) && (a.now ?? Date.now()) - written > SHOW_TIME_AFTER_MS) {
-    const last = content[content.length - 1]!;
-    const note: Node = { type: "text", text: ` · sent ${formatTime(a.createdAt)}`, marks: [GREY] };
-    if (last.type === "paragraph") content[content.length - 1] = { ...last, content: [...(last.content ?? []), note] };
-    else content.push({ type: "paragraph", content: [note] });
-  }
-
+  const content: Node[] = [{ type: "paragraph", content: [{ type: "text", text: a.author, marks: [{ type: "strong" }] }] }];
   if (a.crossed) {
     const text = a.crossed.snippet ? `↩ Re: “${a.crossed.snippet}”` : "↩ Written before the comments above";
-    content.unshift({ type: "paragraph", content: [{ type: "text", text, marks: [{ type: "em" }, GREY] }] });
+    content.push({ type: "paragraph", content: [{ type: "text", text, marks: [{ type: "em" }, GREY] }] });
   }
+  content.push(...(doc.content ?? []));
+  const time = formatTime(a.createdAt);
+  if (time) content.push({ type: "paragraph", content: [{ type: "text", text: time, marks: [GREY] }] });
   return { ...doc, type: "doc", version: 1, content };
 }
 
-/**
- * The words of a comment for a "↩ Re:" quote, without our own notes: drops the grey
- * lines (crossing note, sent time) and the bold author lead of a synced comment.
- */
+const marked = (n: Node, type: string) => Array.isArray(n.marks) && (n.marks as Array<{ type: string }>).some((m) => m.type === type);
+
+/** The words of a comment for a "↩ Re:" quote, without our header and grey notes. */
 export function quoteOf(body: unknown, max = 60): { snippet: string } {
-  const doc = body as Node | undefined;
-  const isGrey = (n: Node) => Array.isArray(n.marks) && (n.marks as Array<{ type: string }>).some((m) => m.type === "textColor");
-  const paras = (doc?.content ?? []).filter((p) => !(p.content ?? []).every(isGrey));
-  const first = paras[0];
-  if (first?.content?.[0] && Array.isArray(first.content[0].marks) && (first.content[0].marks as Array<{ type: string }>).some((m) => m.type === "strong")) {
-    paras[0] = { ...first, content: first.content.slice(1) };
-  }
-  const text = plainText({ type: "doc", content: paras.map((p) => ({ ...p, content: (p.content ?? []).filter((n) => !isGrey(n)) })) }, 1000);
+  const paras = ((body as Node | undefined)?.content ?? []).filter((p) => {
+    const nodes = p.content ?? [];
+    if (nodes.length === 0) return false;
+    if (nodes.every((n) => marked(n, "textColor"))) return false; // our grey notes
+    if (nodes.length === 1 && marked(nodes[0]!, "strong") && p === (body as Node).content![0]) return false; // our header
+    return true;
+  });
+  const text = plainText({ type: "doc", content: paras }, 1000);
   return { snippet: text.length > max ? `${text.slice(0, max - 1)}…` : text };
 }
