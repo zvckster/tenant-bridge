@@ -1,0 +1,13 @@
+# Caddy obtains and renews the TLS certificate for RELAY_DOMAIN automatically.
+{$RELAY_DOMAIN} {
+	encode gzip
+	reverse_proxy relay:8080
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	log {
+		# Access logs carry paths and sizes only; bodies are ciphertext anyway.
+		output stdout
+	}
+}

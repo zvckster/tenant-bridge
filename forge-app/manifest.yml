@@ -1,0 +1,52 @@
+modules:
+  jira:adminPage:
+    - key: tb-admin
+      title: Tenant Bridge
+      resource: admin-ui
+      resolver:
+        function: resolver
+      render: native
+  trigger:
+    - key: tb-issue-events
+      function: on-issue-event
+      events:
+        - avi:jira:created:issue
+        - avi:jira:updated:issue
+        - avi:jira:commented:issue
+        - avi:jira:deleted:comment
+        - avi:jira:created:attachment
+      filter:
+        ignoreSelf: true # changes made by this app never re-trigger it (loop prevention)
+  webtrigger:
+    - key: tb-relay-ping
+      function: on-relay-ping
+  scheduledTrigger:
+    - key: tb-tick
+      function: on-tick
+      interval: fiveMinute
+  function:
+    - key: resolver
+      handler: index.handler
+    - key: on-issue-event
+      handler: index.onIssueEvent
+    - key: on-relay-ping
+      handler: index.onRelayPing
+    - key: on-tick
+      handler: index.onTick
+resources:
+  - key: admin-ui
+    path: src/frontend/index.tsx
+app:
+  id: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000 # replaced by `forge register`
+  runtime:
+    name: nodejs22.x
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
+    - storage:app
+  external:
+    fetch:
+      backend:
+        - address: "*.tenant-bridge.example.com" # the relay; replace with the real domain

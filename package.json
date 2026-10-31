@@ -1,0 +1,15 @@
+{
+  "name": "jira-tenant-bridge",
+  "private": true,
+  "workspaces": ["packages/protocol", "relay", "forge-app"],
+  "scripts": {
+    "build": "npm run build -w @tb/protocol && npm run build -w @tb/relay",
+    "test": "vitest run",
+    "typecheck": "tsc -p packages/protocol && tsc -p relay --noEmit && tsc -p forge-app --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}
