@@ -37,7 +37,7 @@ resources:
   - key: admin-ui
     path: src/frontend/index.tsx
 app:
-  id: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000 # replaced by `forge register`
+  id: ari:cloud:ecosystem::app/473a8ba9-e287-429a-99a0-80e4dd6204e1
   runtime:
     name: nodejs22.x
 permissions:
@@ -49,4 +49,4 @@ permissions:
   external:
     fetch:
       backend:
-        - address: "*.tenant-bridge.example.com" # the relay; replace with the real domain
+        - address: "45-86-155-214.sslip.io" # the relay (test hostname; switch to your own domain later)
