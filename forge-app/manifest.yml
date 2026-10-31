@@ -27,9 +27,7 @@ modules:
   consumer:
     - key: tb-jobs-consumer
       queue: tb-jobs
-      resolver:
-        function: job-worker
-        method: run
+      function: job-worker
   function:
     - key: job-worker
       handler: index.jobs

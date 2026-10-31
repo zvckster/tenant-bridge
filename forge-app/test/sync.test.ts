@@ -21,7 +21,7 @@ const textOf = (adf: any): string => JSON.stringify(adf).match(/"text":"([^"]*)"
 async function runJobs(t: Tenant) {
   while (t.jobs.length > 0) {
     const payload = t.jobs.shift()!;
-    await as(t, () => jobs({ call: { functionKey: "run", payload }, context: {} } as never));
+    await as(t, () => jobs({ body: payload } as never));
   }
 }
 

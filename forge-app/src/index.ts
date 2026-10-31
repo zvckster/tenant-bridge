@@ -81,18 +81,17 @@ export async function onTick(): Promise<void> {
   await enqueue({ kind: "tick" });
 }
 
-/** Async event consumer: long-running work with a generous timeout (manifest). */
-const jobResolver = new Resolver();
-jobResolver.define("run", async ({ payload }: { payload: Job }) => {
-  switch (payload.kind) {
+/** Async event consumer (manifest `consumer` → job-worker): long-running work with a generous timeout. */
+export async function jobs(event: { body: Job }): Promise<void> {
+  const job = event.body;
+  switch (job.kind) {
     case "mailbox":
       return processMailbox();
     case "tick":
       return tick();
     case "sendAttachment":
-      return runSendAttachment(payload);
+      return runSendAttachment(job);
     case "receiveAttachment":
-      return runReceiveAttachment(payload);
+      return runReceiveAttachment(job);
   }
-});
-export const jobs = jobResolver.getDefinitions();
+}
