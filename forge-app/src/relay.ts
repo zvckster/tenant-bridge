@@ -14,7 +14,12 @@ const relayUrl = () => {
 const transport: Transport = async ({ method, path, body, headers }) => {
   const res = await fetch(`${relayUrl()}${path}`, { method, headers, body: body || undefined });
   const text = await res.text();
-  return { status: res.status, json: text ? JSON.parse(text) : null };
+  try {
+    return { status: res.status, json: text ? JSON.parse(text) : null };
+  } catch {
+    // A proxy or error page answered instead of the relay (e.g. relay down, wrong RELAY_URL).
+    throw new Error(`Relay unreachable at ${relayUrl()} (HTTP ${res.status}, non-JSON response)`);
+  }
 };
 
 /** Creates this installation's keys on first use and registers them with the relay. */
