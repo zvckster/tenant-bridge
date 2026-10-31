@@ -16,5 +16,6 @@ const queue = new Queue({ key: "tb-jobs" });
 
 export async function enqueue(job: Job): Promise<void> {
   // Note: the push `concurrency` option was rejected (HTTP 400) by Forge in live tests.
-  await queue.push({ body: job as unknown as Record<string, unknown> });
+  const { jobId } = await queue.push({ body: job as unknown as Record<string, unknown> });
+  console.log(`queued ${job.kind} job ${jobId}`);
 }

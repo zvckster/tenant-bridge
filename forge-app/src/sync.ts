@@ -415,6 +415,11 @@ async function processConnection(conn: ActiveConnection, keys: ConnectionKeys, l
   const taken = takeReady(inbox);
   inbox = taken.state;
   const ready = taken.ready;
+  const held = Object.keys(inbox.pending).map(Number).sort((a, b) => a - b);
+  console.log(
+    `inbox ${conn.id.slice(0, 8)}: got [${list.map((e) => `${e.ch}${e.seq}`).join(",")}] applied<=${inbox.appliedUpTo} ` +
+      `ready ${ready.length} held ${held.length ? `${held[0]}..${held[held.length - 1]} (${held.length})` : "none"} missing [${missingSeqs(inbox, 10).join(",")}]`,
+  );
 
   for (let i = 0; i < ready.length; i++) {
     const env = ready[i]!;

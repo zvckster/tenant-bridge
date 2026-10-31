@@ -45,10 +45,13 @@ export async function runSendAttachment(job: { connectionId: string; localIssueI
   const { client, identity } = await relay();
   const meta = (await jira.listAttachments(job.localIssueId)).find((a) => a.id === job.attachmentId);
   if (!meta) return; // deleted meanwhile
+  const t0 = Date.now();
   const bytes = await jira.downloadAttachment(job.attachmentId);
   const blobId = crypto.randomUUID();
   const sealed = sealBlob(conn.id, blobId, bytes);
+  console.log(`attachment ${meta.filename}: downloaded+encrypted ${bytes.length} bytes in ${Date.now() - t0} ms`);
   await client.putBlob(conn.id, blobId, sealed.data);
+  console.log(`attachment ${meta.filename}: uploaded blob ${blobId} after ${Date.now() - t0} ms`);
   await send(conn, {
     type: "attachment.offer",
     opId: crypto.randomUUID(),
@@ -98,6 +101,7 @@ export async function runReceiveAttachment(job: { connectionId: string; origin: 
       await deleteIncoming(job.connectionId, job.origin);
       return;
     }
+    console.log(`attachment ${inc.filename}: fetched+verified ${bytes.length} bytes`);
     const localId = await jira.uploadAttachment(inc.localIssueId, inc.filename, inc.mimeType, bytes);
     await linkAttachment(job.connectionId, job.origin, localId);
   }

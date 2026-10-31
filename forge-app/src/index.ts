@@ -84,6 +84,7 @@ export async function onTick(): Promise<void> {
 /** Async event consumer (manifest `consumer` → job-worker): long-running work with a generous timeout. */
 export async function jobs(event: { body: Job }): Promise<void> {
   const job = event.body;
+  console.log(`job start: ${job.kind}`);
   switch (job.kind) {
     case "mailbox":
       return processMailbox();
