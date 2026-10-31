@@ -3,7 +3,11 @@ import Resolver from "@forge/resolver";
 import { acceptInvite, approve, createInvite, decline, refreshConnections, revoke, savePolicy } from "./pairing";
 import { runReceiveAttachment, runSendAttachment } from "./attachments";
 import { enqueue, type Job } from "./jobs";
-import { relay } from "./relay";
+import { fingerprint } from "@tb/protocol";
+import * as jira from "./jira";
+import { randomName } from "./names";
+import { ensureIdentity, relay } from "./relay";
+import { getSettings, type SiteSettings, setSettings } from "./state";
 import { onLocalAttachment, onLocalComment, onLocalCommentDeleted, onLocalIssueChange, processMailbox, tick } from "./sync";
 
 // ---------------------------------------------------------------- admin UI backend
@@ -24,14 +28,58 @@ const admin = <P, R>(fn: (payload: P) => Promise<R>) =>
     return fn(payload);
   };
 
+/** Month-to-date traffic per connection, from the relay's metadata (no content). */
+async function usageByConnection(): Promise<Record<string, { sentBytes: number; sentMessages: number; receivedBytes: number; receivedMessages: number }>> {
+  const now = new Date();
+  const from = `${now.toISOString().slice(0, 7)}-01`;
+  const to = now.toISOString().slice(0, 10);
+  const res = (await (await relay()).client.usage(from, to)) as {
+    rows: Array<{ connectionId: string; direction: "in" | "out"; messages: number; bytes: number }>;
+  };
+  const out: Record<string, { sentBytes: number; sentMessages: number; receivedBytes: number; receivedMessages: number }> = {};
+  for (const r of res.rows) {
+    const u = (out[r.connectionId] ??= { sentBytes: 0, sentMessages: 0, receivedBytes: 0, receivedMessages: 0 });
+    if (r.direction === "out") {
+      u.sentBytes += r.bytes;
+      u.sentMessages += r.messages;
+    } else {
+      u.receivedBytes += r.bytes;
+      u.receivedMessages += r.messages;
+    }
+  }
+  return out;
+}
+
+/** Everything the admin page shows, in one call (it refreshes every few seconds). */
+async function overview() {
+  const [connections, settings, site, identity] = await Promise.all([refreshConnections(), getSettings(), jira.siteUrl(), ensureIdentity()]);
+  let usage: Awaited<ReturnType<typeof usageByConnection>> = {};
+  try {
+    usage = await usageByConnection();
+  } catch (err) {
+    console.warn(`usage unavailable: ${String(err)}`);
+  }
+  return {
+    site,
+    settings: settings ?? { displayName: site, mode: "site" as const },
+    myFingerprint: fingerprint(identity.keys),
+    connections: connections.map((c) => ({ ...c, usage: usage[c.id] ?? null })),
+  };
+}
+
+resolver.define("overview", admin(() => overview()));
+resolver.define("saveSettings", admin((p: SiteSettings) => setSettings({ mode: p.mode, displayName: p.displayName.trim().slice(0, 100) })));
+resolver.define("suggestName", admin(async () => ({ name: randomName() })));
+resolver.define("listSpaces", admin(() => jira.listSpaces()));
+resolver.define("spaceStatuses", admin((p: { key: string }) => jira.spaceStatuses(p.key)));
+resolver.define("listLabels", admin(() => jira.listLabels()));
+resolver.define("listCustomFields", admin(() => jira.listCustomFields()));
 resolver.define("createInvite", admin(() => createInvite()));
-resolver.define("acceptInvite", admin((p: { connectionId: string; pairingKey: string; siteName: string }) => acceptInvite(p)));
-resolver.define("listConnections", admin(() => refreshConnections()));
-resolver.define("approve", admin((p: { connectionId: string; siteName: string }) => approve(p.connectionId, p.siteName)));
+resolver.define("acceptInvite", admin((p: { code: string }) => acceptInvite(p)));
+resolver.define("approve", admin((p: { connectionId: string }) => approve(p.connectionId)));
 resolver.define("decline", admin((p: { connectionId: string }) => decline(p.connectionId)));
 resolver.define("revoke", admin((p: { connectionId: string }) => revoke(p.connectionId)));
 resolver.define("savePolicy", admin((p: { connectionId: string; policy: unknown }) => savePolicy(p.connectionId, p.policy)));
-resolver.define("usage", admin(async (p: { from: string; to: string }) => (await relay()).client.usage(p.from, p.to)));
 
 export const handler = resolver.getDefinitions();
 

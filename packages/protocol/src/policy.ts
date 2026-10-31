@@ -15,7 +15,8 @@ export const PolicySchema = z.object({
   outbound: z.object({
     spaces: z.array(z.string()).min(1), // Jira space (project) keys
     issueTypes: z.array(z.string()).default([]), // empty = all
-    jql: z.string().optional(), // extra opt-in filter, e.g. labels = share-acme
+    labels: z.array(z.string()).default([]), // share only tickets with any of these labels (empty = all)
+    jql: z.string().optional(), // advanced extra filter, AND-ed with the labels
     fields: z.array(z.enum(OPTIONAL_FIELDS)).default([]),
     customFields: z.array(z.string()).default([]),
     comments: z.enum(["off", "public"]).default("public"),
@@ -71,7 +72,17 @@ export interface LocalComment {
   visibility?: { type: string; value: string } | null;
 }
 
-/** Static scope checks. The JQL opt-in filter must be checked by the caller against Jira. */
+const jqlString = (s: string) => `"${s.replace(/["\\]/g, "\\$&")}"`;
+
+/** The opt-in filter the caller checks against Jira: label choice AND the advanced JQL. */
+export function outboundFilterJql(policy: Policy): string | undefined {
+  const parts: string[] = [];
+  if (policy.outbound.labels.length > 0) parts.push(`labels in (${policy.outbound.labels.map(jqlString).join(", ")})`);
+  if (policy.outbound.jql?.trim()) parts.push(`(${policy.outbound.jql.trim()})`);
+  return parts.length ? parts.join(" AND ") : undefined;
+}
+
+/** Static scope checks. The opt-in filter (outboundFilterJql) must be checked by the caller against Jira. */
 export function inOutboundScope(policy: Policy, issue: LocalIssue): boolean {
   if (issue.securityLevel) return false;
   if (!policy.outbound.spaces.includes(issue.spaceKey)) return false;
@@ -98,11 +109,11 @@ export function commentShareable(policy: Policy, c: LocalComment): boolean {
   return policy.outbound.comments === "public" && !c.visibility;
 }
 
-/** How a local person appears to the partner. Never email or accountId. */
+/** How a local person appears to the partner, e.g. "Ayman · Zvcks". Never email or accountId. */
 export function authorLabel(policy: Policy, displayName: string): string {
   return policy.outbound.people === "anonymous"
-    ? `${policy.outbound.orgLabel} agent`
-    : `${displayName} (${policy.outbound.orgLabel})`;
+    ? `${policy.outbound.orgLabel} team`
+    : `${displayName} · ${policy.outbound.orgLabel}`;
 }
 
 export type Decision = { allow: true } | { allow: false; reason: string };

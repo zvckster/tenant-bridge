@@ -54,6 +54,7 @@ export interface MirrorLink {
 
 const K = {
   identity: "identity",
+  settings: "settings",
   invite: (inviteId: string) => `invite:${inviteId}`,
   connIndex: "conn-index",
   conn: (id: string) => `conn:${id}`,
@@ -72,6 +73,7 @@ const K = {
   attSent: (connId: string, localAttId: string) => `a-sent:${connId}:${localAttId}`,
   attIncoming: (connId: string, tenant: string, originId: string) => `a-in:${connId}:${tenant}:${originId}`,
   commentOrigin: (localCommentId: string) => `c-origin:${localCommentId}`,
+  thread: (connId: string, localIssueId: string) => `thread:${connId}:${localIssueId}`,
   commentLocal: (connId: string, tenant: string, originId: string) => `c-local:${connId}:${tenant}:${originId}`,
 };
 
@@ -211,3 +213,27 @@ export interface IncomingAttachment {
 export const getIncoming = (connId: string, o: Origin) => kvs.get<IncomingAttachment>(K.attIncoming(connId, o.tenant, o.id));
 export const setIncoming = (connId: string, o: Origin, v: IncomingAttachment) => kvs.set(K.attIncoming(connId, o.tenant, o.id), v);
 export const deleteIncoming = (connId: string, o: Origin) => kvs.delete(K.attIncoming(connId, o.tenant, o.id));
+
+// ---- shared thread: the comments of one ticket that both sides can see, in local order.
+// Used to detect partner replies that crossed in transit (internal comments never count).
+
+const THREAD_MAX = 100;
+export const getThread = async (connId: string, localIssueId: string) => (await kvs.get<string[]>(K.thread(connId, localIssueId))) ?? [];
+export async function appendToThread(connId: string, localIssueId: string, localCommentId: string) {
+  const t = (await getThread(connId, localIssueId)).filter((id) => id !== localCommentId);
+  await kvs.set(K.thread(connId, localIssueId), [...t, localCommentId].slice(-THREAD_MAX));
+}
+export async function removeFromThread(connId: string, localIssueId: string, localCommentId: string) {
+  const t = await getThread(connId, localIssueId);
+  if (t.includes(localCommentId)) await kvs.set(K.thread(connId, localIssueId), t.filter((id) => id !== localCommentId));
+}
+
+// ---- site settings
+
+/** How this site introduces itself to partners: its address, or an anonymous name. */
+export interface SiteSettings {
+  displayName: string;
+  mode: "site" | "anonymous" | "custom";
+}
+export const getSettings = () => kvs.get<SiteSettings>(K.settings);
+export const setSettings = (s: SiteSettings) => kvs.set(K.settings, s);

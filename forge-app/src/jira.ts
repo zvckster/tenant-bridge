@@ -84,9 +84,27 @@ export function scopeJql(scope: { spaces: string[]; issueTypes: string[]; jql?: 
   return parts.join(" AND ");
 }
 
-export async function getComment(issueId: string, commentId: string): Promise<LocalComment & { body: unknown; updated: string }> {
+export async function getComment(
+  issueId: string,
+  commentId: string,
+): Promise<LocalComment & { body: unknown; created: string; updated: string }> {
   const c = await jira<any>(route`/rest/api/3/issue/${issueId}/comment/${commentId}`);
-  return { id: c.id, authorName: c.author?.displayName ?? "Unknown", visibility: c.visibility ?? null, body: c.body, updated: c.updated };
+  return {
+    id: c.id,
+    authorName: c.author?.displayName ?? "Unknown",
+    visibility: c.visibility ?? null,
+    body: c.body,
+    created: c.created,
+    updated: c.updated,
+  };
+}
+
+/** The most recent comments on an issue, oldest first. */
+export async function listComments(issueId: string, max = 50): Promise<Array<{ id: string; created: string; body: unknown }>> {
+  const res = await jira<{ comments: Array<{ id: string; created: string; body: unknown }> }>(
+    route`/rest/api/3/issue/${issueId}/comment?orderBy=-created&maxResults=${max}`,
+  );
+  return res.comments.map((c) => ({ id: String(c.id), created: c.created, body: c.body })).reverse();
 }
 
 export async function createIssue(spaceKey: string, issueType: string, fields: Record<string, unknown>): Promise<string> {
@@ -172,4 +190,56 @@ export async function uploadAttachment(issueId: string, filename: string, mimeTy
   if (!res.ok) throw new Error(`Jira ${res.status} uploading attachment: ${await res.text()}`);
   const [created] = (await res.json()) as Array<{ id: string }>;
   return String(created!.id);
+}
+
+// ---- lookups for the admin page
+
+export async function siteUrl(): Promise<string> {
+  const info = await jira<{ baseUrl: string }>(route`/rest/api/3/serverInfo`);
+  return info.baseUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+export interface SpaceInfo {
+  key: string;
+  name: string;
+  issueTypes: string[];
+}
+
+export async function listSpaces(): Promise<SpaceInfo[]> {
+  const out: SpaceInfo[] = [];
+  for (let startAt = 0; startAt < 500; startAt += 50) {
+    const page = await jira<{ values: Array<{ key: string; name: string; issueTypes?: Array<{ name: string; subtask?: boolean }> }>; isLast?: boolean }>(
+      route`/rest/api/3/project/search?expand=issueTypes&maxResults=50&startAt=${startAt}`,
+    );
+    for (const p of page.values) {
+      out.push({ key: p.key, name: p.name, issueTypes: [...new Set((p.issueTypes ?? []).filter((t) => !t.subtask).map((t) => t.name))] });
+    }
+    if (page.isLast !== false || page.values.length === 0) break;
+  }
+  return out;
+}
+
+/** Status names used in a space, in workflow order as Jira returns them. */
+export async function spaceStatuses(spaceKey: string): Promise<Array<{ name: string; category: string }>> {
+  const byType = await jira<Array<{ statuses: Array<{ name: string; statusCategory?: { key?: string } }> }>>(
+    route`/rest/api/3/project/${spaceKey}/statuses`,
+  );
+  const seen = new Map<string, string>();
+  for (const t of byType) for (const s of t.statuses) if (!seen.has(s.name)) seen.set(s.name, s.statusCategory?.key ?? "");
+  return [...seen].map(([name, category]) => ({ name, category }));
+}
+
+export async function listLabels(): Promise<string[]> {
+  const out: string[] = [];
+  for (let startAt = 0; startAt < 2000; startAt += 1000) {
+    const page = await jira<{ values: string[]; isLast?: boolean }>(route`/rest/api/3/label?maxResults=1000&startAt=${startAt}`);
+    out.push(...page.values);
+    if (page.isLast !== false) break;
+  }
+  return out;
+}
+
+export async function listCustomFields(): Promise<Array<{ id: string; name: string }>> {
+  const fields = await jira<Array<{ id: string; name: string; custom: boolean }>>(route`/rest/api/3/field`);
+  return fields.filter((f) => f.custom).map((f) => ({ id: f.id, name: f.name })).sort((a, b) => a.name.localeCompare(b.name));
 }

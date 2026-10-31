@@ -48,6 +48,13 @@ export const PayloadSchema = z.discriminatedUnion("type", [
     author: z.string(),
     body: adf,
     updatedAt: z.string(),
+    /** When the author wrote it (Jira can't backdate comments, so receivers display it). */
+    createdAt: z.string().optional(),
+    /**
+     * The newest comment on the ticket that the author could see when writing (null: none).
+     * Lets the receiver detect replies that cross in transit and label them.
+     */
+    after: OriginSchema.nullable().optional(),
   }),
   z.object({ type: z.literal("comment.delete"), opId, ticket: TicketRefSchema, origin: OriginSchema }),
   z.object({

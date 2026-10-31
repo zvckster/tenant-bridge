@@ -13,6 +13,7 @@ export interface FakeComment {
   body: any;
   author: string;
   visibility?: { type: string; value: string } | null;
+  created: string;
   updated: string;
 }
 
@@ -80,7 +81,8 @@ export class FakeJira {
   }
 
   addComment(issue: FakeIssue, body: any, author: string, visibility?: FakeComment["visibility"]): FakeComment {
-    const c = { id: String(this.nextId++), body, author, visibility: visibility ?? null, updated: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const c = { id: String(this.nextId++), body, author, visibility: visibility ?? null, created: now, updated: now };
     issue.comments.push(c);
     return c;
   }
@@ -135,6 +137,7 @@ export class FakeJira {
     const touch = (i: FakeIssue) => (i.updated = new Date().toISOString());
 
     try {
+      if (seg[3] === "serverInfo") return { status: 200, json: { baseUrl: `https://${this.site}` } };
       if (seg[3] === "mypermissions") return { status: 200, json: { permissions: { ADMINISTER: { havePermission: this.userIsAdmin } } } };
 
       if (seg[3] === "search" && seg[4] === "jql") {
@@ -195,6 +198,12 @@ export class FakeJira {
       }
       if (sub === "comment") {
         const cid = seg[6];
+        if (!cid && method === "GET") {
+          const newestFirst = (q.get("orderBy") ?? "").startsWith("-");
+          const all = newestFirst ? [...issue.comments].reverse() : issue.comments;
+          const max = Number(q.get("maxResults") ?? 50);
+          return { status: 200, json: { comments: all.slice(0, max).map((x) => ({ id: x.id, created: x.created, body: x.body })) } };
+        }
         if (!cid && method === "POST") {
           const c = this.addComment(issue, body.body, "Tenant Bridge (app)");
           touch(issue);
@@ -202,7 +211,9 @@ export class FakeJira {
         }
         const c = issue.comments.find((x) => x.id === cid);
         if (!c) throw new HttpFail(404, "comment not found");
-        if (method === "GET") return { status: 200, json: { id: c.id, body: c.body, author: { displayName: c.author }, visibility: c.visibility ?? undefined, updated: c.updated } };
+        if (method === "GET") {
+          return { status: 200, json: { id: c.id, body: c.body, author: { displayName: c.author }, visibility: c.visibility ?? undefined, created: c.created, updated: c.updated } };
+        }
         if (method === "PUT") {
           c.body = body.body;
           c.updated = new Date().toISOString();

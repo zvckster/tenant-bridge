@@ -4,9 +4,11 @@ import {
   channelFor,
   commentShareable,
   type ConnectionKeys,
+  type Origin,
   DecryptError,
   type Envelope,
   inOutboundScope,
+  outboundFilterJql,
   markApplied,
   missingSeqs,
   open,
@@ -21,14 +23,17 @@ import {
   takeReady,
   type TicketRef,
 } from "@tb/protocol";
-import { sanitizeAdf, withAuthor } from "./adf";
+import { plainText, sanitizeAdf, withAttribution } from "./adf";
 import { acceptOffer, syncAttachments } from "./attachments";
 import * as jira from "./jira";
 import { LockBusyError, withLock } from "./lock";
 import { relay } from "./relay";
 import {
+  appendToThread,
   getCommentOrigin,
   getConnectionKeys,
+  getThread,
+  removeFromThread,
   getInbox,
   getLocalCommentId,
   getMirrorByLocal,
@@ -56,7 +61,7 @@ const MIRROR_LABEL = "tb-mirror";
 async function buildSnapshot(conn: ActiveConnection, issueId: string, myId: string): Promise<PayloadOf<"ticket.snapshot"> | undefined> {
   const issue = await jira.getIssue(issueId, conn.policy.outbound.customFields);
   if (!inOutboundScope(conn.policy, issue)) return undefined;
-  if (!(await jira.matchesJql(issue.key, conn.policy.outbound.jql))) return undefined;
+  if (!(await jira.matchesJql(issue.key, outboundFilterJql(conn.policy)))) return undefined;
   const fields = shareFields(conn.policy, issue);
   if (fields.description !== undefined) fields.description = sanitizeAdf(fields.description);
   return {
@@ -124,7 +129,7 @@ async function shareTargets(issueId: string, me: string): Promise<Array<{ conn: 
   const issue = await jira.getIssue(issueId);
   const targets: Array<{ conn: ActiveConnection; ref: TicketRef }> = [];
   for (const conn of conns) {
-    if (inOutboundScope(conn.policy, issue) && (await jira.matchesJql(issue.key, conn.policy.outbound.jql))) {
+    if (inOutboundScope(conn.policy, issue) && (await jira.matchesJql(issue.key, outboundFilterJql(conn.policy)))) {
       targets.push({ conn, ref: { owner: me, id: issue.id, key: issue.key } });
     }
   }
@@ -139,6 +144,14 @@ export async function onLocalComment(issueId: string, commentId: string): Promis
 
   for (const { conn, ref } of await shareTargets(issueId, identity.installId)) {
     if (!commentShareable(conn.policy, comment)) continue;
+    // The newest shared comment before this one is what its author saw when writing.
+    const thread = (await getThread(conn.id, issueId)).filter((id) => id !== comment.id);
+    const prev = thread[thread.length - 1];
+    let after: Origin | null = null;
+    if (prev) {
+      const o = await getCommentOrigin(prev);
+      after = o ? { tenant: o.tenant, id: o.id } : { tenant: identity.installId, id: prev };
+    }
     await send(conn, {
       type: "comment.upsert",
       opId: crypto.randomUUID(),
@@ -147,7 +160,10 @@ export async function onLocalComment(issueId: string, commentId: string): Promis
       author: authorLabel(conn.policy, comment.authorName),
       body: sanitizeAdf(comment.body),
       updatedAt: comment.updated,
+      createdAt: comment.created,
+      after,
     });
+    await appendToThread(conn.id, issueId, comment.id);
   }
 }
 
@@ -157,6 +173,7 @@ export async function onLocalCommentDeleted(issueId: string, commentId: string):
   const { identity } = await relay();
   for (const { conn, ref } of await shareTargets(issueId, identity.installId)) {
     await send(conn, { type: "comment.delete", opId: crypto.randomUUID(), ticket: ref, origin: { tenant: identity.installId, id: commentId } });
+    await removeFromThread(conn.id, issueId, commentId);
   }
 }
 
@@ -245,6 +262,29 @@ const statusNote = (name: string) => ({
   ],
 });
 
+/**
+ * Jira orders comments by arrival. If the partner's author hadn't seen our newest comment
+ * (their reply crossed it in transit), return what they were actually replying to, so the
+ * comment can say so instead of appearing to answer the wrong question.
+ */
+async function crossedInTransit(
+  conn: ActiveConnection,
+  issueId: string,
+  after: Origin | null,
+  me: string,
+): Promise<{ snippet?: string } | undefined> {
+  const thread = await getThread(conn.id, issueId); // shared comments only
+  const seenLocalId = after === null ? undefined : after.tenant === me ? after.id : await getLocalCommentId(conn.id, after);
+  const since = seenLocalId === undefined ? thread : thread.slice(thread.indexOf(seenLocalId) + 1);
+  // Only our own newer comments matter: the partner's author has seen their side's comments.
+  let unseen = false;
+  for (const id of since) if (!(await getCommentOrigin(id))) unseen = true;
+  if (!unseen) return undefined;
+  if (!seenLocalId) return {};
+  const seen = (await jira.listComments(issueId)).find((c) => c.id === seenLocalId);
+  return { snippet: seen ? plainText(seen.body, 80) : undefined };
+}
+
 const FIELD_TO_JIRA: Record<string, (v: unknown) => Record<string, unknown>> = {
   summary: (v) => ({ summary: v }),
   priority: (v) => ({ priority: { name: v } }),
@@ -274,10 +314,15 @@ async function apply(conn: ActiveConnection, p: Payload, me: string): Promise<vo
 
     case "comment.upsert": {
       const issueId = await localIssueFor(conn, p.ticket, me);
-      const body = withAuthor(p.author, sanitizeAdf(p.body));
       const localId = await getLocalCommentId(conn.id, p.origin);
-      if (localId) return jira.updateComment(issueId, localId, body);
-      return linkComment(conn.id, p.origin, await jira.addComment(issueId, body));
+      const attribution = { author: p.author, createdAt: p.createdAt ?? p.updatedAt };
+      if (localId) return jira.updateComment(issueId, localId, withAttribution(attribution, sanitizeAdf(p.body)));
+      const crossed = p.after === undefined ? undefined : await crossedInTransit(conn, issueId, p.after, me);
+      const body = withAttribution({ ...attribution, crossed }, sanitizeAdf(p.body));
+      const newId = await jira.addComment(issueId, body);
+      await linkComment(conn.id, p.origin, newId);
+      await appendToThread(conn.id, issueId, newId);
+      return;
     }
 
     case "comment.delete": {
@@ -285,6 +330,7 @@ async function apply(conn: ActiveConnection, p: Payload, me: string): Promise<vo
       const localId = await getLocalCommentId(conn.id, p.origin);
       if (!localId) return;
       await jira.deleteComment(issueId, localId);
+      await removeFromThread(conn.id, issueId, localId);
       return unlinkComment(conn.id, p.origin, localId);
     }
 
@@ -477,7 +523,7 @@ export async function reconcile(conn: ActiveConnection, me: string, now = Date.n
 
   // Overlap the window by 10 minutes so nothing falls between runs.
   const sinceMinutes = state ? (now - state.lastRunAt) / 60_000 + 10 : undefined;
-  const ids = await jira.searchIds(jira.scopeJql(conn.policy.outbound, sinceMinutes), CATCH_UP_MAX);
+  const ids = await jira.searchIds(jira.scopeJql({ ...conn.policy.outbound, jql: outboundFilterJql(conn.policy) }, sinceMinutes), CATCH_UP_MAX);
   for (const id of ids) await pushSnapshot(conn, id, me);
 
   const mirrors = await listMirrors(conn.id);

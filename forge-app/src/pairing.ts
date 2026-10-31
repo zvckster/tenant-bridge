@@ -7,10 +7,12 @@ import {
   deriveConnectionKeys,
   fingerprint,
   macEquals,
-  parsePairingKey,
+  decodeInviteCode,
+  encodeInviteCode,
   type Policy,
   PolicySchema,
 } from "@tb/protocol";
+import * as jira from "./jira";
 import { relay } from "./relay";
 import {
   deleteConnectionKeys,
@@ -19,6 +21,7 @@ import {
   getConnection,
   getInvite,
   getPairSecret,
+  getSettings,
   type Identity,
   listConnections,
   type LocalConnection,
@@ -31,6 +34,11 @@ import { send } from "./sync";
 
 const APP_VERSION = "0.1.0";
 
+/** The name partners see: the admin's choice, or this site's address by default. */
+export async function myDisplayName(): Promise<string> {
+  return (await getSettings())?.displayName ?? (await jira.siteUrl());
+}
+
 function myBundle(identity: Identity, siteName: string): Bundle {
   return {
     installId: identity.installId,
@@ -41,26 +49,26 @@ function myBundle(identity: Identity, siteName: string): Bundle {
   };
 }
 
-/** Step 1 (tenant A): returns what the admin sends to the partner. */
+/** Step 1 (tenant A): returns the one code the admin sends to the partner. */
 export async function createInvite() {
   const { client } = await relay();
   const invite = newInvite();
   await setInvite(invite);
   await client.createInvite(invite.inviteId, invite.expiresAt);
-  return { connectionId: invite.inviteId, pairingKey: invite.pairingKey, expiresAt: invite.expiresAt };
+  return { code: encodeInviteCode(invite.inviteId, invite.pairingSecret), expiresAt: invite.expiresAt };
 }
 
-/** Step 2 (tenant B): admin enters the partner's Connection ID and Pairing key. */
-export async function acceptInvite(input: { connectionId: string; pairingKey: string; siteName: string }) {
+/** Step 2 (tenant B): admin pastes the partner's invite code. */
+export async function acceptInvite(input: { code: string }) {
   const { client, identity } = await relay();
-  const secret = parsePairingKey(input.pairingKey);
-  const bundle = myBundle(identity, input.siteName);
-  const { connectionId } = await client.acceptInvite(input.connectionId, bundle, acceptMac(secret, input.connectionId, bundle));
-  await setPairSecret(connectionId, { secret, inviteId: input.connectionId });
+  const { inviteId, pairingSecret: secret } = decodeInviteCode(input.code);
+  const bundle = myBundle(identity, await myDisplayName());
+  const { connectionId } = await client.acceptInvite(inviteId, bundle, acceptMac(secret, inviteId, bundle));
+  await setPairSecret(connectionId, { secret, inviteId });
   await saveConnection({
     id: connectionId,
     role: "acceptor",
-    inviteId: input.connectionId,
+    inviteId,
     status: "awaiting_confirm",
     createdAt: Date.now(),
   });
@@ -144,7 +152,7 @@ export async function refreshConnections(): Promise<LocalConnection[]> {
 }
 
 /** Step 3 (tenant A): admin checked the partner's site and fingerprint, and approves. */
-export async function approve(connectionId: string, siteName: string) {
+export async function approve(connectionId: string) {
   const { client, identity } = await relay();
   const local = await getConnection(connectionId);
   if (!local || local.status !== "pending_approval" || !local.peerBundle || !local.peer) {
@@ -152,7 +160,7 @@ export async function approve(connectionId: string, siteName: string) {
   }
   const invite = await getInvite(local.inviteId);
   if (!invite) throw new Error("invite expired");
-  const bundle = myBundle(identity, siteName);
+  const bundle = myBundle(identity, await myDisplayName());
   await client.confirm(connectionId, bundle, confirmMac(invite.pairingSecret, invite.inviteId, connectionId, bundle, local.peerBundle));
   await setConnectionKeys(
     deriveConnectionKeys({

@@ -7,6 +7,9 @@ import {
   confirmMac,
   createInvite,
   DecryptError,
+  decodeInviteCode,
+  encodeInviteCode,
+  InviteCodeError,
   deriveConnectionKeys,
   dueForRetransmit,
   emptyInbox,
@@ -76,6 +79,19 @@ describe("pairing", () => {
     const macA = confirmMac(inv.pairingSecret, inv.inviteId, connId, bundleA, bundleB);
     expect(macEquals(macA, confirmMac(typed, inv.inviteId, connId, bundleA, bundleB))).toBe(true);
     expect(macEquals(macA, confirmMac(typed, inv.inviteId, crypto.randomUUID(), bundleA, bundleB))).toBe(false);
+  });
+
+  it("one-string invite codes round-trip and catch typos", () => {
+    const inv = createInvite();
+    const code = encodeInviteCode(inv.inviteId, inv.pairingSecret);
+    expect(code).toMatch(/^TB1-[A-Z2-7]{4}(-[A-Z2-7]{1,4})+$/);
+    expect(decodeInviteCode(code)).toEqual({ inviteId: inv.inviteId, pairingSecret: inv.pairingSecret });
+    expect(decodeInviteCode(`  ${code.toLowerCase().replace(/-/g, " ")} `).inviteId).toBe(inv.inviteId);
+    // One changed character is caught by the checksum.
+    const i = 10;
+    const typo = code.slice(0, i) + (code[i] === "A" ? "B" : "A") + code.slice(i + 1);
+    expect(() => decodeInviteCode(typo)).toThrow(InviteCodeError);
+    expect(() => decodeInviteCode("hello")).toThrow(InviteCodeError);
   });
 
   it("fingerprints are stable and differ per key", () => {

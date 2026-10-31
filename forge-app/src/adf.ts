@@ -28,16 +28,58 @@ export function sanitizeAdf(doc: unknown): unknown {
   return walk(doc as Node);
 }
 
-/** Prefixes a partner comment with who wrote it, since the app posts it as itself. */
-export function withAuthor(label: string, body: unknown): unknown {
-  const doc = (body as Node | undefined) ?? { type: "doc", version: 1, content: [] };
-  return {
-    ...doc,
-    type: "doc",
-    version: 1,
-    content: [
-      { type: "paragraph", content: [{ type: "text", text: label, marks: [{ type: "strong" }] }] },
-      ...(doc.content ?? []),
-    ],
+/** Plain text of an ADF document, shortened to `max` characters. */
+export function plainText(doc: unknown, max = 80): string {
+  const parts: string[] = [];
+  const walk = (n: Node | undefined) => {
+    if (!n) return;
+    if (typeof n.text === "string") parts.push(n.text);
+    for (const c of n.content ?? []) walk(c);
   };
+  walk(doc as Node);
+  const text = parts.join(" ").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** "31 Oct, 10:42 UTC": the author's original time, since Jira can't backdate comments. */
+export function formatTime(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  const month = d.toLocaleString("en-GB", { month: "short", timeZone: "UTC" });
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${d.getUTCDate()} ${month}, ${hh}:${mm} UTC`;
+}
+
+export interface Attribution {
+  author: string; // e.g. "Ayman · Zvcks"
+  createdAt?: string;
+  /** Set when this reply crossed another comment in transit. */
+  crossed?: { snippet?: string };
+}
+
+/**
+ * Puts the partner's author and original time at the start of the comment's first line
+ * ("**Ayman · Zvcks** · 31 Oct, 10:42 UTC — text…"), since the app posts it as itself.
+ * A reply that crossed newer comments in transit gets a "↪ reply to …" line on top.
+ */
+export function withAttribution(a: Attribution, body: unknown): unknown {
+  const doc = (body as Node | undefined) ?? { type: "doc", version: 1, content: [] };
+  const content = [...(doc.content ?? [])];
+  const time = formatTime(a.createdAt);
+  const lead: Node[] = [
+    { type: "text", text: a.author, marks: [{ type: "strong" }] },
+    { type: "text", text: `${time ? ` · ${time}` : ""} — ` },
+  ];
+  if (content[0]?.type === "paragraph") {
+    content[0] = { ...content[0], content: [...lead, ...(content[0].content ?? [])] };
+  } else {
+    content.unshift({ type: "paragraph", content: lead });
+  }
+  if (a.crossed) {
+    const text = a.crossed.snippet ? `↪ reply to “${a.crossed.snippet}”` : "↪ written before the comments above";
+    content.unshift({ type: "paragraph", content: [{ type: "text", text, marks: [{ type: "em" }] }] });
+  }
+  return { ...doc, type: "doc", version: 1, content };
 }

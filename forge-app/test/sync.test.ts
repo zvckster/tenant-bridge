@@ -15,7 +15,9 @@ const acme = addTenant("acme", "acme.atlassian.net");
 const globex = addTenant("globex", "globex.atlassian.net");
 
 const doc = (text: string) => ({ type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
-const textOf = (adf: any): string => JSON.stringify(adf).match(/"text":"([^"]*)"/g)?.map((m) => m.slice(8, -1)).join(" ") ?? "";
+const rawText = (adf: any): string => JSON.stringify(adf).match(/"text":"([^"]*)"/g)?.map((m) => m.slice(8, -1)).join(" ") ?? "";
+/** Comment text, with the attribution line "Alice · Acme · <time> — " shown as "Alice (Acme) ". */
+const textOf = (adf: any): string => rawText(adf).replace(/^(?:↪[^]*?” |↪ written before the comments above )?([^·]+?) · ([^·]+?)\s*(?:·[^—]+)?— +/, "$1 ($2) ");
 
 /** Runs queued Forge async events (the job worker) for one tenant. */
 async function runJobs(t: Tenant) {
@@ -97,11 +99,12 @@ let connectionId = "";
 
 beforeAll(async () => {
   const invite = await as(acme, () => pairing.createInvite());
-  await as(globex, () => pairing.acceptInvite({ connectionId: invite.connectionId, pairingKey: invite.pairingKey, siteName: "globex.atlassian.net" }));
+  expect(invite.code).toMatch(/^TB1-/); // one string carries id + key
+  await as(globex, () => pairing.acceptInvite({ code: invite.code }));
   const pending = await as(acme, () => pairing.refreshConnections());
   expect(pending[0]).toMatchObject({ status: "pending_approval", peerBundle: { siteName: "globex.atlassian.net" } });
   connectionId = pending[0]!.id;
-  await as(acme, () => pairing.approve(connectionId, "acme.atlassian.net"));
+  await as(acme, () => pairing.approve(connectionId));
   const active = await as(globex, () => pairing.refreshConnections());
   expect(active[0]).toMatchObject({ status: "active", peerFingerprint: pending[0]!.peerFingerprint ? expect.any(String) : undefined });
 
@@ -144,6 +147,43 @@ describe("two tenants through the real relay", () => {
     expect(issue.comments.map((c) => textOf(c.body))).toContain("Gina (Globex) Thanks, any ETA?");
     // The partner comment was written by the app, so it must not echo back.
     expect(mirror.comments).toHaveLength(2);
+  });
+
+  it("puts author, company and original time on one line", async () => {
+    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
+    const mirror = mirrorsIn(globex)[0]!;
+    await userComments(acme, issue, "Format check", "Alice");
+    await deliver();
+    const last = mirror.comments[mirror.comments.length - 1]!;
+    expect(rawText(last.body)).toMatch(/^Alice · Acme  · \d{1,2} \w{3}, \d\d:\d\d UTC —  Format check$/);
+    expect(last.body.content).toHaveLength(1); // no separate header paragraph
+  });
+
+  it("labels replies that crossed in transit, on both sides", async () => {
+    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
+    const mirror = mirrorsIn(globex)[0]!;
+    await userComments(acme, issue, "Question one?", "Alice");
+    await deliver();
+
+    // Gina answers Q1 and Alice asks Q2 before either message is delivered.
+    await userComments(globex, mirror, "Answer to one", "Gina");
+    await userComments(acme, issue, "Question two?", "Alice");
+    // An internal (restricted) note must never count as something the partner saw.
+    await userComments(acme, issue, "internal note", "Alice", { type: "role", value: "Developers" });
+    await deliver();
+
+    const tail = (c: H.FakeComment[], n: number) => c.slice(-n).map((x) => rawText(x.body));
+    // Acme sees Q1, Q2, (internal), then the answer: labelled as a reply to Q1.
+    const answerOnAcme = tail(issue.comments, 1)[0]!;
+    expect(answerOnAcme).toMatch(/^↪ reply to “Question one\?” Gina · Globex/);
+    // Globex sees Q1, its answer, then Q2: labelled too, since Alice hadn't seen the answer.
+    const q2OnGlobex = tail(mirror.comments, 1)[0]!;
+    expect(q2OnGlobex).toMatch(/^↪ reply to “Alice · Acme .* Question one\?” Alice · Acme/);
+
+    // An ordinary reply that didn't cross anything carries no label.
+    await userComments(globex, mirror, "Answer to two", "Gina");
+    await deliver();
+    expect(tail(issue.comments, 1)[0]).toMatch(/^Gina · Globex/);
   });
 
   it("applies allowed status requests and reverts refused ones", async () => {
@@ -343,9 +383,12 @@ describe("two tenants through the real relay", () => {
     const call = (functionKey: string) => as(globex, () => handler({ call: { functionKey, payload: {} }, context: {} } as never));
     globex.jira.userIsAdmin = false;
     await expect(call("createInvite")).rejects.toThrow("Jira administrator permission required");
-    await expect(call("listConnections")).rejects.toThrow("Jira administrator permission required");
+    await expect(call("overview")).rejects.toThrow("Jira administrator permission required");
     globex.jira.userIsAdmin = true;
-    await expect(call("listConnections")).resolves.toHaveLength(1);
+    const ov = (await call("overview")) as { site: string; connections: Array<{ usage: { sentMessages: number } | null }> };
+    expect(ov.site).toBe("globex.atlassian.net"); // filled in automatically
+    expect(ov.connections).toHaveLength(1);
+    expect(ov.connections[0]!.usage!.sentMessages).toBeGreaterThan(0); // relay metering per connection
   });
 
   it("revocation stops the sync on both sides", async () => {
