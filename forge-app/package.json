@@ -7,7 +7,7 @@
     "lint": "forge lint"
   },
   "dependencies": {
-    "@forge/api": "7.0.2",
+    "@forge/api": "^8.4.0",
     "@forge/bridge": "7.2.1",
     "@forge/events": "^3.0.9",
     "@forge/kvs": "2.1.1",
