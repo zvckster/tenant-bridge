@@ -117,14 +117,28 @@ export function deleteComment(issueId: string, commentId: string) {
   return jira<void>(route`/rest/api/3/issue/${issueId}/comment/${commentId}`, { method: "DELETE" });
 }
 
+export interface Transition {
+  id: string;
+  to: { name: string; category: string }; // category: new | indeterminate | done
+}
+
+/** Transitions available from the issue's current status. */
+export async function getTransitions(issueId: string): Promise<Transition[]> {
+  const { transitions } = await jira<{
+    transitions: Array<{ id: string; to: { name: string; statusCategory?: { key?: string } } }>;
+  }>(route`/rest/api/3/issue/${issueId}/transitions`);
+  return transitions.map((t) => ({ id: t.id, to: { name: t.to.name, category: t.to.statusCategory?.key ?? "" } }));
+}
+
+export function doTransition(issueId: string, transitionId: string) {
+  return jira<void>(route`/rest/api/3/issue/${issueId}/transitions`, { method: "POST", body: { transition: { id: transitionId } } });
+}
+
 /** Moves the issue to the status named `to`, if a transition to it exists from where it is now. */
 export async function transitionTo(issueId: string, to: string): Promise<boolean> {
-  const { transitions } = await jira<{ transitions: Array<{ id: string; to: { name: string } }> }>(
-    route`/rest/api/3/issue/${issueId}/transitions`,
-  );
-  const t = transitions.find((x) => x.to.name === to);
+  const t = (await getTransitions(issueId)).find((x) => x.to.name === to);
   if (!t) return false;
-  await jira<void>(route`/rest/api/3/issue/${issueId}/transitions`, { method: "POST", body: { transition: { id: t.id } } });
+  await doTransition(issueId, t.id);
   return true;
 }
 

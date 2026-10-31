@@ -293,6 +293,31 @@ describe("two tenants through the real relay", () => {
     expect(JSON.stringify(mirror.description)).not.toContain("abc-123");
   });
 
+  it("shows a partner's custom status the client's workflow lacks, and notes it once", async () => {
+    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
+    const mirror = mirrorsIn(globex)[0]!;
+    acme.jira.statuses["Waiting for customer"] = "indeterminate"; // only Acme has it
+    const notes = () => mirror.comments.filter((c) => textOf(c.body).startsWith("🔄 Partner status:")).map((c) => textOf(c.body));
+
+    await userTransitions(acme, issue, "Waiting for customer");
+    await deliver();
+    expect(mirror.status).toBe("In Progress"); // closest status of the same category
+    expect(notes()).toEqual(["🔄 Partner status:  Waiting for customer"]);
+
+    // Further updates while still waiting don't repeat the note.
+    await as(acme, () => onIssueEvent({ eventType: "avi:jira:updated:issue", issue: { id: issue.id, key: issue.key } }));
+    await deliver();
+    expect(notes()).toHaveLength(1);
+
+    // A status both sides share syncs exactly, without a note.
+    await userTransitions(acme, issue, "Done");
+    await deliver();
+    expect(mirror.status).toBe("Done");
+    expect(notes()).toHaveLength(1);
+    await userTransitions(acme, issue, "In Progress");
+    await deliver();
+  });
+
   it("admin page functions refuse non-admins", async () => {
     const call = (functionKey: string) => as(globex, () => handler({ call: { functionKey, payload: {} }, context: {} } as never));
     globex.jira.userIsAdmin = false;

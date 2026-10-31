@@ -202,11 +202,48 @@ async function applySnapshot(conn: ActiveConnection, p: PayloadOf<"ticket.snapsh
     await saveMirror({ connectionId: conn.id, ref: p.ref, localIssueId: localId });
     await jira.setIssueProperty(localId, "tb.mirror", { ref: p.ref, connectionId: conn.id });
   }
-  await saveMirror({ connectionId: conn.id, ref: p.ref, localIssueId: localId, hash: snapshotHash(p) });
-  // Unmapped statuses fall back to the same name; if no such transition exists, it's skipped.
-  const target = conn.policy.inbound.statusMap[p.fields.status.name] ?? p.fields.status.name;
-  await jira.transitionTo(localId, target);
+  const partner = p.fields.status;
+  const landed = await mirrorStatus(conn, localId, partner);
+  // When our workflow can't show the partner's exact status (e.g. their custom
+  // "Waiting for customer"), say so on the ticket, once per change.
+  if (landed !== partner.name && existing?.partnerStatus !== partner.name) {
+    await jira.addComment(localId, statusNote(partner.name));
+  }
+  await saveMirror({ connectionId: conn.id, ref: p.ref, localIssueId: localId, hash: snapshotHash(p), partnerStatus: partner.name });
 }
+
+/**
+ * Puts the mirror in the closest status to the partner's: the admin's mapping or the
+ * same name if a transition exists, otherwise any status of the same category
+ * (to do / in progress / done). Returns the status the mirror ends up in.
+ */
+async function mirrorStatus(conn: ActiveConnection, localId: string, partner: { name: string; category: string }): Promise<string> {
+  const wanted = conn.policy.inbound.statusMap[partner.name] ?? partner.name;
+  const current = (await jira.getIssue(localId)).fields.status;
+  if (current.name === wanted) return current.name;
+  const transitions = await jira.getTransitions(localId);
+  const exact = transitions.find((t) => t.to.name === wanted);
+  const sameCategory =
+    current.category === partner.category ? undefined : transitions.find((t) => t.to.category === partner.category);
+  const t = exact ?? sameCategory;
+  if (!t) return current.name;
+  await jira.doTransition(localId, t.id);
+  return t.to.name;
+}
+
+const statusNote = (name: string) => ({
+  type: "doc",
+  version: 1,
+  content: [
+    {
+      type: "paragraph",
+      content: [
+        { type: "text", text: "🔄 Partner status: " },
+        { type: "text", text: name, marks: [{ type: "strong" }] },
+      ],
+    },
+  ],
+});
 
 const FIELD_TO_JIRA: Record<string, (v: unknown) => Record<string, unknown>> = {
   summary: (v) => ({ summary: v }),

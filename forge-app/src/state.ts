@@ -48,6 +48,8 @@ export interface MirrorLink {
   localIssueId: string;
   /** snapshotHash of the last snapshot applied; compared during reconciliation. */
   hash?: string;
+  /** The partner's status name last seen, so a status note is posted once per change. */
+  partnerStatus?: string;
 }
 
 const K = {

@@ -34,7 +34,7 @@ export interface FakeIssue {
   attachments: Array<{ id: string; filename: string; mimeType: string; content: Uint8Array; author: string }>;
 }
 
-const STATUS_CATEGORY: Record<string, string> = { Open: "new", "In Progress": "indeterminate", "Waiting for vendor": "indeterminate", Done: "done" };
+const DEFAULT_STATUSES: Record<string, string> = { Open: "new", "In Progress": "indeterminate", "Waiting for vendor": "indeterminate", Done: "done" };
 
 export class FakeJira {
   issues = new Map<string, FakeIssue>();
@@ -44,6 +44,8 @@ export class FakeJira {
   failWrites = 0;
   /** Whether the user calling the admin page is a Jira administrator. */
   userIsAdmin = true;
+  /** This site's workflow: status name → category. Sites can differ, like real ones. */
+  statuses: Record<string, string> = { ...DEFAULT_STATUSES };
 
   constructor(readonly site: string) {}
 
@@ -96,7 +98,7 @@ export class FakeJira {
       fields: {
         summary: i.summary,
         description: i.description ?? null,
-        status: { name: i.status, statusCategory: { key: STATUS_CATEGORY[i.status] ?? "new" } },
+        status: { name: i.status, statusCategory: { key: this.statuses[i.status] ?? "new" } },
         issuetype: { name: i.issuetype },
         priority: i.priority ? { name: i.priority } : null,
         labels: i.labels,
@@ -181,8 +183,10 @@ export class FakeJira {
         return { status: 200 };
       }
       if (sub === "transitions") {
-        const others = Object.keys(STATUS_CATEGORY).filter((s) => s !== issue.status);
-        if (method === "GET") return { status: 200, json: { transitions: others.map((s) => ({ id: `t-${s}`, to: { name: s } })) } };
+        const others = Object.keys(this.statuses).filter((s) => s !== issue.status);
+        if (method === "GET") {
+          return { status: 200, json: { transitions: others.map((s) => ({ id: `t-${s}`, to: { name: s, statusCategory: { key: this.statuses[s] } } })) } };
+        }
         const to = String(body.transition.id).replace(/^t-/, "");
         if (!others.includes(to)) throw new HttpFail(400, "bad transition");
         issue.status = to;
