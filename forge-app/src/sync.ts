@@ -23,7 +23,7 @@ import {
   takeReady,
   type TicketRef,
 } from "@tb/protocol";
-import { plainText, sanitizeAdf, withAttribution } from "./adf";
+import { quoteOf, sanitizeAdf, withAttribution } from "./adf";
 import { acceptOffer, syncAttachments } from "./attachments";
 import * as jira from "./jira";
 import { LockBusyError, withLock } from "./lock";
@@ -310,7 +310,7 @@ async function crossedInTransit(
   }
   if (!unseen) return undefined;
   const seen = seenIdx >= 0 ? thread[seenIdx] : undefined;
-  return seen ? { snippet: plainText(seen.body, 80) } : {};
+  return seen ? quoteOf(seen.body, seen.authorName) : {};
 }
 
 const FIELD_TO_JIRA: Record<string, (v: unknown) => Record<string, unknown>> = {

@@ -175,10 +175,10 @@ describe("two tenants through the real relay", () => {
     const tail = (c: H.FakeComment[], n: number) => c.slice(-n).map((x) => rawText(x.body));
     // Acme sees Q1, Q2, (internal), then the answer: labelled as a reply to Q1.
     const answerOnAcme = tail(issue.comments, 1)[0]!;
-    expect(answerOnAcme).toMatch(/^↪ reply to “Question one\?” Gina · Globex/);
+    expect(answerOnAcme).toMatch(/^↪ reply to Alice: “Question one\?” Gina · Globex/);
     // Globex sees Q1, its answer, then Q2: labelled too, since Alice hadn't seen the answer.
     const q2OnGlobex = tail(mirror.comments, 1)[0]!;
-    expect(q2OnGlobex).toMatch(/^↪ reply to “Alice · Acme .* Question one\?” Alice · Acme/);
+    expect(q2OnGlobex).toMatch(/^↪ reply to Alice: “Question one\?” Alice · Acme/);
 
     // An ordinary reply that didn't cross anything carries no label.
     await userComments(globex, mirror, "Answer to two", "Gina");
@@ -198,7 +198,7 @@ describe("two tenants through the real relay", () => {
     await userComments(acme, issue, "Any update?", "Alice");
     await deliver();
     const lastOnGlobex = rawText(mirror.comments[mirror.comments.length - 1]!.body);
-    expect(lastOnGlobex).toMatch(/^↪ reply to “.*Is it fixed\?” Alice · Acme/); // crossed Gina's answer
+    expect(lastOnGlobex).toMatch(/^↪ reply to Alice: “Is it fixed\?” Alice · Acme/); // crossed Gina's answer
 
     // The next scheduled tick finds and sends the answer that had no event.
     await as(globex, () => onTick());

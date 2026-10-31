@@ -55,8 +55,8 @@ export function formatTime(iso: string | undefined): string | undefined {
 export interface Attribution {
   author: string; // e.g. "Ayman · Zvcks"
   createdAt?: string;
-  /** Set when this reply crossed another comment in transit. */
-  crossed?: { snippet?: string };
+  /** Set when this reply crossed another comment in transit: what it actually answers. */
+  crossed?: { author?: string; snippet?: string };
 }
 
 /**
@@ -78,8 +78,20 @@ export function withAttribution(a: Attribution, body: unknown): unknown {
     content.unshift({ type: "paragraph", content: lead });
   }
   if (a.crossed) {
-    const text = a.crossed.snippet ? `↪ reply to “${a.crossed.snippet}”` : "↪ written before the comments above";
+    const who = a.crossed.author ? ` ${a.crossed.author}:` : "";
+    const text = a.crossed.snippet ? `↪ reply to${who} “${a.crossed.snippet}”` : "↪ written before the comments above";
     content.unshift({ type: "paragraph", content: [{ type: "text", text, marks: [{ type: "em" }] }] });
   }
   return { ...doc, type: "doc", version: 1, content };
+}
+
+/**
+ * Who wrote a comment and what it says, without our attribution line: for a synced
+ * comment ("Ayman · Zvcks · 31 Oct, 10:42 UTC — text") the partner's name is in the text.
+ */
+export function quoteOf(body: unknown, localAuthor: string, max = 80): { author: string; snippet: string } {
+  const text = plainText(body, 1000).replace(/^↪ (?:reply to .*?” |written before the comments above )/, "");
+  const m = text.match(/^(.+?) · .+? — (.*)$/s);
+  const [author, rest] = m ? [m[1]!.trim(), m[2]!.trim()] : [localAuthor, text];
+  return { author, snippet: rest.length > max ? `${rest.slice(0, max - 1)}…` : rest };
 }
