@@ -3,6 +3,20 @@ import { invoke as bridgeInvoke } from "@forge/bridge";
 // Without metadata, invoke resolves to the resolver's return value.
 export const call = <T = unknown,>(key: string, payload?: Record<string, unknown>) => bridgeInvoke(key, payload) as Promise<T>;
 
+export const initials = (name: string) =>
+  name
+    .replace(/\.atlassian\.net$/, "")
+    .split(/[-.\s_]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]!.toUpperCase())
+    .join("") || "?";
+
+/** A stable hue per partner, for its avatar. */
+export const hueOf = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+
+export const shortSite = (s: string) => s.replace(/\.atlassian\.net$/, "");
+
 /** Resolver errors arrive as "There was an error invoking the function - <message>". */
 export function errorText(e: unknown): string {
   const msg = String((e as Error)?.message ?? e);

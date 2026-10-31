@@ -2,3 +2,5 @@ node_modules/
 dist/
 .env
 deploy/.env
+forge-app/static/admin/build/
+forge-app/static/admin/build-mock/

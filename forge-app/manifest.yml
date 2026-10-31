@@ -5,7 +5,6 @@ modules:
       resource: admin-ui
       resolver:
         function: resolver
-      render: native
   trigger:
     - key: tb-issue-events
       function: on-issue-event
@@ -44,12 +43,15 @@ modules:
       handler: index.onTick
 resources:
   - key: admin-ui
-    path: src/frontend/index.tsx
+    path: static/admin/build # Custom UI: run `npm run build:ui` before `forge deploy`
 app:
   id: ari:cloud:ecosystem::app/473a8ba9-e287-429a-99a0-80e4dd6204e1
   runtime:
     name: nodejs22.x
 permissions:
+  content:
+    styles:
+      - unsafe-inline # React style attributes in the admin page
   scopes:
     - read:jira-work
     - write:jira-work
