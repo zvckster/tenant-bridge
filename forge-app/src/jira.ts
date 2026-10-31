@@ -65,7 +65,8 @@ export async function searchIssues(jql: string, max = 500): Promise<Array<{ id: 
   do {
     const page = await jira<{ issues: Array<{ id: string; key: string }>; nextPageToken?: string }>(route`/rest/api/3/search/jql`, {
       method: "POST",
-      body: { jql, maxResults: Math.min(100, max - out.length), fields: ["id"], nextPageToken },
+      // The search only returns an issue's key when some field is requested; "id" alone isn't enough.
+      body: { jql, maxResults: Math.min(100, max - out.length), fields: ["key"], nextPageToken },
     });
     out.push(...page.issues.map((i) => ({ id: String(i.id), key: i.key })));
     nextPageToken = page.nextPageToken;

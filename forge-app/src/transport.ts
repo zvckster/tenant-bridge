@@ -1,4 +1,4 @@
-import { channelFor, type Envelope, envelopeSize, type Payload, type Policy, retransmitDelayMs, seal } from "@tb/protocol";
+import { channelFor, type Envelope, envelopeSize, type Payload, PayloadSchema, type Policy, retransmitDelayMs, seal } from "@tb/protocol";
 import { withLock } from "./lock";
 import { relay } from "./relay";
 import {
@@ -30,6 +30,11 @@ export async function activeConnections(): Promise<ActiveConnection[]> {
 
 /** Encrypts and sends one payload. Data payloads stay in the outbox until acknowledged. */
 export async function send(conn: LocalConnection, payload: Payload): Promise<void> {
+  // Catch our own bugs here, loudly, rather than as a rejection on the partner's side.
+  const check = PayloadSchema.safeParse(payload);
+  if (!check.success) {
+    throw new Error(`refusing to send invalid ${payload.type}: ${check.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  }
   const keys = await getConnectionKeys(conn.id);
   if (!keys) throw new Error(`no keys for connection ${conn.id}`);
   const ch = channelFor(payload.type);

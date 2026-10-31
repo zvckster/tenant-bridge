@@ -435,6 +435,27 @@ describe("two tenants through the real relay", () => {
     expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice: old rules");
   });
 
+  it("an authentic but malformed message is skipped and reported, never blocking the rest", async () => {
+    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
+    const mirror = mirrorsIn(globex)[0]!;
+    // Bypass send()'s own validation to put a bad (but properly encrypted) message on the wire.
+    const { seal: sealEnv } = await import("@tb/protocol");
+    const state = await import("../src/state.js");
+    await as(acme, async () => {
+      const keys = (await state.getConnectionKeys(connectionId))!;
+      const meta = await state.getOutboxMeta(connectionId);
+      const env = sealEnv(keys, "d", meta.nextSeq, 0, { type: "comment.upsert", ticket: { owner: keys.me, id: issue.id } });
+      const now = Date.now();
+      await state.setOutboxEntry(connectionId, { env, firstSentAt: now, lastSentAt: now, attempts: 1 });
+      await state.setOutboxMeta(connectionId, { ...meta, nextSeq: meta.nextSeq + 1, seqs: [...meta.seqs, env.seq] });
+      const { relay: rel } = await import("../src/relay.js");
+      await (await rel()).client.send(env);
+    });
+    await userComments(acme, issue, "after the bad one", "Alice");
+    await deliver();
+    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice: after the bad one");
+  });
+
   it("admin page functions refuse non-admins", async () => {
     const call = (functionKey: string) => as(globex, () => handler({ call: { functionKey, payload: {} }, context: {} } as never));
     globex.jira.userIsAdmin = false;

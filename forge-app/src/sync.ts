@@ -416,16 +416,28 @@ async function handleControl(conn: LocalConnection, p: Payload): Promise<void> {
   }
 }
 
-function decrypt(keys: ConnectionKeys, env: Envelope): Payload | undefined {
+type Opened =
+  | { ok: true; payload: Payload }
+  /** Authentic (it decrypted) but unusable: skipped and reported, never retried. */
+  | { ok: false; authentic: true; reason: string }
+  /** Failed authentication: dropped; the sender retransmits the genuine envelope. */
+  | { ok: false; authentic: false };
+
+function decrypt(keys: ConnectionKeys, env: Envelope): Opened {
+  let raw: unknown;
   try {
-    const p = PayloadSchema.parse(open(keys, env, [EPOCH]));
-    // A payload must arrive on its own channel; anything else is dropped.
-    return channelFor(p.type) === env.ch ? p : undefined;
+    raw = open(keys, env, [EPOCH]);
   } catch (err) {
     if (err instanceof DecryptError) console.warn(`dropping undecryptable envelope seq ${env.seq}`);
-    else console.warn(`dropping malformed payload seq ${env.seq}: ${String(err)}`);
-    return undefined;
+    return { ok: false, authentic: false };
   }
+  const parsed = PayloadSchema.safeParse(raw);
+  if (!parsed.success) {
+    console.warn(`skipping malformed payload seq ${env.seq}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+    return { ok: false, authentic: true, reason: "malformed_payload" };
+  }
+  if (channelFor(parsed.data.type) !== env.ch) return { ok: false, authentic: true, reason: "wrong_channel" };
+  return { ok: true, payload: parsed.data };
 }
 
 /** Pulls the mailbox, applies everything in order, acks the relay and the partner. */
@@ -470,15 +482,17 @@ async function processConnection(conn: ActiveConnection, keys: ConnectionKeys, l
   const notKept = new Set<number>();
 
   for (const env of [...list].sort((a, b) => a.seq - b.seq)) {
-    const payload = decrypt(keys, env);
-    if (!payload) continue; // relay-acked below; the sender retransmits the original
+    const opened = decrypt(keys, env);
+    if (!opened.ok && !opened.authentic) continue; // relay-acked below; the sender retransmits the original
 
     if (env.ch === "c") {
       const r = receiveControl(inbox, env);
       inbox = r.state;
-      if (r.fresh) await handleControl(conn, payload);
+      if (r.fresh && opened.ok) await handleControl(conn, opened.payload);
       continue;
     }
+    // Authentic data, even if unusable, takes its place in the order (see the apply loop),
+    // so one bad message can never block the ones behind it.
     const r = receive(inbox, env);
     inbox = r.state;
     if (!r.kept) notKept.add(env.seq);
@@ -497,9 +511,11 @@ async function processConnection(conn: ActiveConnection, keys: ConnectionKeys, l
 
   for (let i = 0; i < ready.length; i++) {
     const env = ready[i]!;
-    const payload = decrypt(keys, env);
+    const opened = decrypt(keys, env);
+    const payload = opened.ok ? opened.payload : undefined;
     try {
-      if (payload) await apply(conn, payload, me);
+      if (!opened.ok) throw new Rejected(opened.authentic ? opened.reason : "undecryptable");
+      await apply(conn, opened.payload, me);
     } catch (err) {
       if (!(err instanceof Rejected)) {
         // Transient (e.g. Jira unavailable): keep this and the rest for the next run.

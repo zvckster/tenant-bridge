@@ -142,7 +142,9 @@ export class FakeJira {
 
       if (seg[3] === "search" && seg[4] === "jql") {
         const hits = [...this.issues.values()].filter((i) => this.matches(i, body.jql)).slice(0, body.maxResults ?? 50);
-        return { status: 200, json: { issues: hits.map((i) => ({ id: i.id, key: i.key })) } };
+        // Like real Jira: requesting only "id" returns no key.
+        const idOnly = Array.isArray(body.fields) && body.fields.length === 1 && body.fields[0] === "id";
+        return { status: 200, json: { issues: hits.map((i) => (idOnly ? { id: i.id } : { id: i.id, key: i.key })) } };
       }
 
       if (seg[3] === "attachment" && seg[4] === "content") {
