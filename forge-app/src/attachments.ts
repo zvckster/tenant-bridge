@@ -32,8 +32,9 @@ export async function syncAttachments(conn: ActiveConnection, localIssueId: stri
     if (sent?.state === "done" || (sent?.state === "sending" && Date.now() - sent.at < SEND_RETRY_AFTER_MS)) continue;
     if (a.size > rules.maxBytes || a.size > ATTACHMENT_HARD_LIMIT) continue;
     if (rules.mimeTypes.length > 0 && !rules.mimeTypes.includes(a.mimeType)) continue;
-    await setSendState(conn.id, a.id, { state: "sending", at: Date.now() });
+    // Mark only once queued: a failed push must not block the file for an hour.
     await enqueue({ kind: "sendAttachment", connectionId: conn.id, localIssueId, attachmentId: a.id, ref });
+    await setSendState(conn.id, a.id, { state: "sending", at: Date.now() });
   }
 }
 
@@ -65,7 +66,11 @@ export async function runSendAttachment(job: { connectionId: string; localIssueI
 
 /** An allowed offer: remember it and queue the download. */
 export async function acceptOffer(conn: ActiveConnection, p: PayloadOf<"attachment.offer">, localIssueId: string): Promise<void> {
-  if (await getLocalAttachmentId(conn.id, p.origin)) return; // already have this file
+  if (await getLocalAttachmentId(conn.id, p.origin)) {
+    // Already have this file (a resend): just free the relay copy.
+    if (p.blob) await (await relay()).client.deleteBlob(conn.id, p.blob.id).catch(() => {});
+    return;
+  }
   if (!p.blob) throw new Rejected("attachment_format_unsupported"); // old chunked senders
   await setIncoming(conn.id, p.origin, {
     localIssueId,

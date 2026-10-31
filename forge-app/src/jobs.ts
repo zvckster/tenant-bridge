@@ -3,6 +3,8 @@ import { Queue } from "@forge/events";
 /**
  * Background work runs on the Forge async event queue (consumer function with a long
  * timeout), never in event handlers or the relay ping, which have short limits.
+ * Concurrent mailbox/tick jobs are safe: the per-connection inbox and outbox locks
+ * serialize them (a busy inbox is simply left on the relay for the holder).
  */
 export type Job =
   | { kind: "mailbox" }
@@ -12,12 +14,7 @@ export type Job =
 
 const queue = new Queue({ key: "tb-jobs" });
 
-/** Only one mailbox/tick job per installation at a time: they share the inbox. */
-const SERIAL = { key: "tb-serial", limit: 1 };
-/** File transfers run beside them, a couple at a time. */
-const FILES = { key: "tb-files", limit: 2 };
-
 export async function enqueue(job: Job): Promise<void> {
-  const concurrency = job.kind === "mailbox" || job.kind === "tick" ? SERIAL : FILES;
-  await queue.push({ body: job as unknown as Record<string, unknown>, concurrency });
+  // Note: the push `concurrency` option was rejected (HTTP 400) by Forge in live tests.
+  await queue.push({ body: job as unknown as Record<string, unknown> });
 }
