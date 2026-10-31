@@ -77,7 +77,8 @@ const jqlString = (s: string) => `"${s.replace(/["\\]/g, "\\$&")}"`;
 /** The opt-in filter the caller checks against Jira: label choice AND the advanced JQL. */
 export function outboundFilterJql(policy: Policy): string | undefined {
   const parts: string[] = [];
-  if (policy.outbound.labels.length > 0) parts.push(`labels in (${policy.outbound.labels.map(jqlString).join(", ")})`);
+  const labels = policy.outbound.labels ?? [];
+  if (labels.length > 0) parts.push(`labels in (${labels.map(jqlString).join(", ")})`);
   if (policy.outbound.jql?.trim()) parts.push(`(${policy.outbound.jql.trim()})`);
   return parts.length ? parts.join(" AND ") : undefined;
 }

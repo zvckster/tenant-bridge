@@ -379,6 +379,18 @@ describe("two tenants through the real relay", () => {
     expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice (Acme) after a crash");
   });
 
+  it("rules saved before newer policy fields existed still work", async () => {
+    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
+    const mirror = mirrorsIn(globex)[0]!;
+    // Simulate a policy stored by an older version: no outbound.labels.
+    const key = `conn:${connectionId}`;
+    const stored = acme.kv.get(key)!.value as { policy: { outbound: Record<string, unknown> } };
+    delete stored.policy.outbound.labels;
+    await userComments(acme, issue, "old rules", "Alice");
+    await deliver();
+    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice (Acme) old rules");
+  });
+
   it("admin page functions refuse non-admins", async () => {
     const call = (functionKey: string) => as(globex, () => handler({ call: { functionKey, payload: {} }, context: {} } as never));
     globex.jira.userIsAdmin = false;

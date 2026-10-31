@@ -9,6 +9,7 @@ import {
   type Origin,
   type OutboxEntry,
   type Policy,
+  PolicySchema,
   type TicketRef,
 } from "@tb/protocol";
 
@@ -84,13 +85,23 @@ export const getInvite = (inviteId: string) => kvs.getSecret<Invite>(K.invite(in
 export const setInvite = (i: Invite) => kvs.setSecret(K.invite(i.inviteId), i);
 export const deleteInvite = (inviteId: string) => kvs.deleteSecret(K.invite(inviteId));
 
+/**
+ * Stored rules may predate newer policy fields; parsing applies the schema defaults so
+ * code can rely on every field (e.g. outbound.labels) being present.
+ */
+function normalize(c: LocalConnection | undefined): LocalConnection | undefined {
+  if (!c?.policy) return c;
+  const parsed = PolicySchema.safeParse(c.policy);
+  return parsed.success ? { ...c, policy: parsed.data } : c;
+}
+
 export async function listConnections(): Promise<LocalConnection[]> {
   const ids = (await kvs.get<string[]>(K.connIndex)) ?? [];
-  const all = await Promise.all(ids.map((id) => kvs.get<LocalConnection>(K.conn(id))));
+  const all = await Promise.all(ids.map(async (id) => normalize(await kvs.get<LocalConnection>(K.conn(id)))));
   return all.filter((c): c is LocalConnection => !!c);
 }
 
-export const getConnection = (id: string) => kvs.get<LocalConnection>(K.conn(id));
+export const getConnection = async (id: string) => normalize(await kvs.get<LocalConnection>(K.conn(id)));
 
 export async function saveConnection(c: LocalConnection) {
   const ids = (await kvs.get<string[]>(K.connIndex)) ?? [];
