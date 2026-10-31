@@ -1,6 +1,8 @@
 import api, { route, type WebTriggerResponse } from "@forge/api";
 import Resolver from "@forge/resolver";
 import { acceptInvite, approve, createInvite, decline, refreshConnections, revoke, savePolicy } from "./pairing";
+import { runReceiveAttachment, runSendAttachment } from "./attachments";
+import { enqueue, type Job } from "./jobs";
 import { relay } from "./relay";
 import { onLocalAttachment, onLocalComment, onLocalCommentDeleted, onLocalIssueChange, processMailbox, tick } from "./sync";
 
@@ -62,19 +64,35 @@ export async function onIssueEvent(event: IssueEvent): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------- relay ping + schedule
+// ---------------------------------------------------------------- relay ping, schedule, jobs
 
 /** The relay pings this URL when mail is waiting. The ping carries no data. */
 export async function onRelayPing(): Promise<WebTriggerResponse> {
   try {
-    await processMailbox(2);
+    await enqueue({ kind: "mailbox" }); // processed by the job worker, one at a time
   } catch (err) {
-    console.warn(`mailbox processing failed: ${String(err)}`); // the scheduled tick retries
+    console.warn(`could not queue mailbox job: ${String(err)}`); // the scheduled tick catches up
   }
   return { statusCode: 204, headers: {}, body: "" };
 }
 
 export async function onTick(): Promise<void> {
   await refreshConnections();
-  await tick();
+  await enqueue({ kind: "tick" });
 }
+
+/** Async event consumer: long-running work with a generous timeout (manifest). */
+const jobResolver = new Resolver();
+jobResolver.define("run", async ({ payload }: { payload: Job }) => {
+  switch (payload.kind) {
+    case "mailbox":
+      return processMailbox();
+    case "tick":
+      return tick();
+    case "sendAttachment":
+      return runSendAttachment(payload);
+    case "receiveAttachment":
+      return runReceiveAttachment(payload);
+  }
+});
+export const jobs = jobResolver.getDefinitions();

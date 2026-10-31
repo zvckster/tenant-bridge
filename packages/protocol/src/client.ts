@@ -6,9 +6,11 @@ import type { Bundle } from "./pairing.js";
 export type Transport = (req: {
   method: string;
   path: string;
-  body: string;
+  body: string | Uint8Array;
   headers: Record<string, string>;
-}) => Promise<{ status: number; json: unknown }>;
+  /** Set for blob downloads: the transport returns the raw bytes in `bytes`. */
+  binaryResponse?: boolean;
+}) => Promise<{ status: number; json: unknown; bytes?: Uint8Array }>;
 
 export class RelayError extends Error {
   constructor(
@@ -51,6 +53,34 @@ export class RelayClient {
       throw new RelayError(res.status, (res.json as { error?: string } | null)?.error ?? "unknown");
     }
     return res.json as T;
+  }
+
+  /** Uploads an encrypted attachment blob for the partner. Idempotent on blobId. */
+  async putBlob(connectionId: string, blobId: string, data: Uint8Array): Promise<void> {
+    const path = `/v1/connections/${connectionId}/blobs/${blobId}`;
+    const headers = {
+      ...signRequest({ installId: this.installId, signPriv: this.signPriv, method: "PUT", path, body: data, now: this.now() }),
+      "content-type": "application/octet-stream",
+    };
+    const res = await this.transport({ method: "PUT", path, body: data, headers });
+    if (res.status !== 201 && res.status !== 200) {
+      throw new RelayError(res.status, (res.json as { error?: string } | null)?.error ?? "unknown");
+    }
+  }
+
+  async getBlob(connectionId: string, blobId: string): Promise<Uint8Array> {
+    const path = `/v1/connections/${connectionId}/blobs/${blobId}`;
+    const headers = signRequest({ installId: this.installId, signPriv: this.signPriv, method: "GET", path, body: "", now: this.now() });
+    const res = await this.transport({ method: "GET", path, body: "", headers, binaryResponse: true });
+    if (res.status !== 200 || !res.bytes) {
+      throw new RelayError(res.status, (res.json as { error?: string } | null)?.error ?? "blob_unavailable");
+    }
+    return res.bytes;
+  }
+
+  /** The receiver confirms it stored the file: the relay deletes the blob. */
+  deleteBlob(connectionId: string, blobId: string) {
+    return this.call<{ ok: true }>("DELETE", `/v1/connections/${connectionId}/blobs/${blobId}`);
   }
 
   register(keys: { signPub: string; dhPub: string }, pingUrl?: string) {

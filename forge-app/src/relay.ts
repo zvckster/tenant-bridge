@@ -11,8 +11,16 @@ const relayUrl = () => {
 
 // TODO(phase 2): switch to Forge Remote (invokeRemote) so each call carries a
 // Forge Invocation Token the relay can verify (installation + license).
-const transport: Transport = async ({ method, path, body, headers }) => {
-  const res = await fetch(`${relayUrl()}${path}`, { method, headers, body: body || undefined });
+const transport: Transport = async ({ method, path, body, headers, binaryResponse }) => {
+  const res = await fetch(`${relayUrl()}${path}`, {
+    method,
+    headers,
+    // Forge fetch takes an ArrayBuffer for binary bodies; slice() gives one of exactly this length.
+    body: typeof body === "string" ? body || undefined : (body.slice().buffer as ArrayBuffer),
+  });
+  if (binaryResponse && res.status === 200) {
+    return { status: 200, json: null, bytes: new Uint8Array(await res.arrayBuffer()) };
+  }
   const text = await res.text();
   try {
     return { status: res.status, json: text ? JSON.parse(text) : null };

@@ -71,7 +71,6 @@ const K = {
   attLocal: (connId: string, tenant: string, originId: string) => `a-local:${connId}:${tenant}:${originId}`,
   attSent: (connId: string, localAttId: string) => `a-sent:${connId}:${localAttId}`,
   attIncoming: (connId: string, tenant: string, originId: string) => `a-in:${connId}:${tenant}:${originId}`,
-  attChunk: (connId: string, tenant: string, originId: string, i: number) => `a-chunk:${connId}:${tenant}:${originId}:${i}`,
   commentOrigin: (localCommentId: string) => `c-origin:${localCommentId}`,
   commentLocal: (connId: string, tenant: string, originId: string) => `c-local:${connId}:${tenant}:${originId}`,
 };
@@ -191,22 +190,24 @@ export async function linkAttachment(connId: string, origin: Origin, localAttId:
   await kvs.set(K.attLocal(connId, origin.tenant, origin.id), localAttId);
 }
 
-export const isAttachmentSent = async (connId: string, localAttId: string) => (await kvs.get<boolean>(K.attSent(connId, localAttId))) === true;
-export const markAttachmentSent = (connId: string, localAttId: string) => kvs.set(K.attSent(connId, localAttId), true);
+/** Outbound progress per attachment and connection: queued for sending, or done. */
+export interface SendState {
+  state: "sending" | "done";
+  at: number;
+}
+export const getSendState = (connId: string, localAttId: string) => kvs.get<SendState>(K.attSent(connId, localAttId));
+export const setSendState = (connId: string, localAttId: string, v: SendState) => kvs.set(K.attSent(connId, localAttId), v);
 
-/** An attachment being received: the accepted offer and how many chunks are stored so far. */
+/** An attachment being received: the accepted offer, waiting for its blob to be fetched. */
 export interface IncomingAttachment {
   localIssueId: string;
   filename: string;
   mimeType: string;
   size: number;
   sha256: string;
-  chunks: number;
-  received: number;
+  blobId: string;
+  blobKey: string;
 }
 export const getIncoming = (connId: string, o: Origin) => kvs.get<IncomingAttachment>(K.attIncoming(connId, o.tenant, o.id));
 export const setIncoming = (connId: string, o: Origin, v: IncomingAttachment) => kvs.set(K.attIncoming(connId, o.tenant, o.id), v);
 export const deleteIncoming = (connId: string, o: Origin) => kvs.delete(K.attIncoming(connId, o.tenant, o.id));
-export const getChunk = (connId: string, o: Origin, i: number) => kvs.get<string>(K.attChunk(connId, o.tenant, o.id, i));
-export const setChunk = (connId: string, o: Origin, i: number, data: string) => kvs.set(K.attChunk(connId, o.tenant, o.id, i), data);
-export const deleteChunk = (connId: string, o: Origin, i: number) => kvs.delete(K.attChunk(connId, o.tenant, o.id, i));

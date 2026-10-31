@@ -22,7 +22,7 @@ import {
   type TicketRef,
 } from "@tb/protocol";
 import { sanitizeAdf, withAuthor } from "./adf";
-import { acceptChunk, acceptOffer, syncAttachments } from "./attachments";
+import { acceptOffer, syncAttachments } from "./attachments";
 import * as jira from "./jira";
 import { LockBusyError, withLock } from "./lock";
 import { relay } from "./relay";
@@ -316,7 +316,7 @@ async function apply(conn: ActiveConnection, p: Payload, me: string): Promise<vo
       return acceptOffer(conn, p, await localIssueFor(conn, p.ticket, me));
 
     case "attachment.chunk":
-      return acceptChunk(conn, p);
+      return; // legacy chunked transfer; files now travel as relay blobs
 
     case "reaction.set": // Jira's public REST API has no comment reactions yet
       throw new Rejected("not_supported_yet");

@@ -12,8 +12,11 @@ export const AUTH_HEADERS = {
   sig: "x-tb-sig",
 } as const;
 
-function signingString(method: string, path: string, ts: string, nonce: string, body: string): Uint8Array {
-  const bodyHash = bytesToHex(sha256(utf8(body)));
+/** A request body: JSON text, or raw bytes for blob uploads. */
+export type RequestBody = string | Uint8Array;
+
+function signingString(method: string, path: string, ts: string, nonce: string, body: RequestBody): Uint8Array {
+  const bodyHash = bytesToHex(sha256(typeof body === "string" ? utf8(body) : body));
   return utf8(["tb/v1/req", method.toUpperCase(), path, ts, nonce, bodyHash].join("\n"));
 }
 
@@ -23,7 +26,7 @@ export function signRequest(params: {
   signPriv: string;
   method: string;
   path: string;
-  body: string;
+  body: RequestBody;
   now?: number;
 }): Record<string, string> {
   const ts = String(params.now ?? Date.now());
@@ -44,7 +47,7 @@ export function verifyRequest(params: {
   signPub: string;
   method: string;
   path: string;
-  body: string;
+  body: RequestBody;
   now?: number;
 }): RequestCheck {
   const h = params.headers;

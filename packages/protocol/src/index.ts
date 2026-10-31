@@ -7,3 +7,4 @@ export * from "./policy.js";
 export * from "./reliability.js";
 export * from "./auth.js";
 export * from "./client.js";
+export * from "./blob.js";

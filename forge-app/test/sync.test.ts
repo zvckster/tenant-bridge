@@ -2,9 +2,10 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@forge/kvs", async () => (await import("./harness.js")).kvsMock);
 vi.mock("@forge/api", async () => (await import("./harness.js")).apiMock);
+vi.mock("@forge/events", async () => (await import("./harness.js")).eventsMock);
 
 const H = await import("./harness.js");
-const { onIssueEvent, onRelayPing, onTick, handler } = await import("../src/index.js");
+const { onIssueEvent, onRelayPing, onTick, handler, jobs } = await import("../src/index.js");
 const pairing = await import("../src/pairing.js");
 
 const { as, addTenant, pings, relayStore, tenantByPing } = H;
@@ -16,13 +17,22 @@ const globex = addTenant("globex", "globex.atlassian.net");
 const doc = (text: string) => ({ type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
 const textOf = (adf: any): string => JSON.stringify(adf).match(/"text":"([^"]*)"/g)?.map((m) => m.slice(8, -1)).join(" ") ?? "";
 
-/** Delivers relay pings until both sides are quiet, as Forge web triggers would. */
-async function deliver(maxPings = 500) {
-  for (let i = 0; pings.length > 0; i++) {
-    if (i >= maxPings) throw new Error("sync did not settle (ping storm?)");
-    const url = pings.shift()!;
-    const t = tenantByPing(url);
+/** Runs queued Forge async events (the job worker) for one tenant. */
+async function runJobs(t: Tenant) {
+  while (t.jobs.length > 0) {
+    const payload = t.jobs.shift()!;
+    await as(t, () => jobs({ call: { functionKey: "run", payload }, context: {} } as never));
+  }
+}
+
+/** Delivers relay pings and runs queued jobs until both sides are quiet, as Forge would. */
+async function deliver(maxSteps = 2000) {
+  for (let i = 0; pings.length > 0 || H.allTenants().some((t) => t.jobs.length > 0); i++) {
+    if (i >= maxSteps) throw new Error("sync did not settle (ping storm?)");
+    const url = pings.shift();
+    const t = url ? tenantByPing(url) : undefined;
     if (t) await as(t, () => onRelayPing());
+    for (const x of H.allTenants()) await runJobs(x);
   }
 }
 
@@ -61,18 +71,18 @@ const acmePolicy = (attachments = false) => ({
     jql: "labels = share-globex",
     fields: ["description", "priority"],
     orgLabel: "Acme",
-    attachments: { enabled: attachments, maxBytes: 1024 * 1024, mimeTypes: ["application/pdf", "image/png"] },
+    attachments: { enabled: attachments, maxBytes: 10 * 1024 * 1024, mimeTypes: ["application/pdf", "image/png"] },
   },
   partner: {
     statusTransitions: [{ from: "Waiting for vendor", to: "In Progress" }],
     editableFields: ["priority"],
-    attachmentAdd: { enabled: attachments, maxBytes: 1024 * 1024, mimeTypes: ["image/png"] },
+    attachmentAdd: { enabled: attachments, maxBytes: 10 * 1024 * 1024, mimeTypes: ["image/png"] },
   },
   inbound: { targetSpace: "ACMEIN", issueType: "Task" },
 });
 const globexPolicy = (attachments = false) => ({
-  outbound: { spaces: ["GLX"], orgLabel: "Globex", attachments: { enabled: attachments, maxBytes: 1024 * 1024, mimeTypes: [] } },
-  inbound: { targetSpace: "VEND", issueType: "Task", attachments: { enabled: attachments, maxBytes: 1024 * 1024, mimeTypes: [] } },
+  outbound: { spaces: ["GLX"], orgLabel: "Globex", attachments: { enabled: attachments, maxBytes: 10 * 1024 * 1024, mimeTypes: [] } },
+  inbound: { targetSpace: "VEND", issueType: "Task", attachments: { enabled: attachments, maxBytes: 10 * 1024 * 1024, mimeTypes: [] } },
 });
 const randomBytes = (n: number) => new Uint8Array(Array.from({ length: n }, (_, i) => (i * 7919 + n) % 251));
 async function userAttaches(t: Tenant, issue: H.FakeIssue, filename: string, mimeType: string, bytes: Uint8Array, author: string) {
@@ -191,6 +201,7 @@ describe("two tenants through the real relay", () => {
     expect(texts()).not.toContain("Alice (Acme) first");
 
     await as(globex, () => onTick());
+    await deliver();
     const all = texts();
     expect(all.indexOf("Alice (Acme) first")).toBeGreaterThan(-1);
     expect(all.indexOf("Alice (Acme) second")).toBeGreaterThan(all.indexOf("Alice (Acme) first"));
@@ -242,7 +253,7 @@ describe("two tenants through the real relay", () => {
 
     const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
     const mirror = mirrorsIn(globex)[0]!;
-    const bytes = randomBytes(250 * 1024); // 3 chunks
+    const bytes = randomBytes(5 * 1024 * 1024); // a "big" file: one encrypted blob via the relay
     await userAttaches(acme, issue, "wiring-diagram.pdf", "application/pdf", bytes, "Alice");
     await deliver();
 
@@ -256,7 +267,7 @@ describe("two tenants through the real relay", () => {
     // Received files are never echoed back, and no chunks or queued envelopes linger.
     expect(issue.attachments.map((a) => a.filename).sort()).toEqual(["early.pdf", "wiring-diagram.pdf"]);
     for (const t of [acme, globex]) {
-      expect(keysIn(t, "a-chunk:")).toEqual([]);
+      expect(keysIn(t, "a-in:")).toEqual([]); // no half-received files left
       expect(keysIn(t, "outbox-entry:")).toEqual([]);
       expect(keysIn(t, "inbox-env:")).toEqual([]);
     }
@@ -316,6 +327,16 @@ describe("two tenants through the real relay", () => {
     expect(notes()).toHaveLength(1);
     await userTransitions(acme, issue, "In Progress");
     await deliver();
+  });
+
+  it("a lock left behind by a timed-out run does not block syncing", async () => {
+    const issue = [...acme.jira.issues.values()].find((i) => i.summary.startsWith("Printer on fire"))!;
+    const mirror = mirrorsIn(globex)[0]!;
+    // Forge KVS keeps expired keys around; simulate a dead holder's lock that never got deleted.
+    acme.kv.set(`lock:outbox:${connectionId}`, { value: { owner: "dead-invocation", expiresAt: Date.now() - 1000 } });
+    await userComments(acme, issue, "after a crash", "Alice");
+    await deliver();
+    expect(mirror.comments.map((c) => textOf(c.body))).toContain("Alice (Acme) after a crash");
   });
 
   it("admin page functions refuse non-admins", async () => {

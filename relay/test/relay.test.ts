@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   acceptMac,
+  BlobDecryptError,
   type Bundle,
   confirmMac,
   createInvite,
@@ -8,10 +9,12 @@ import {
   generateIdentity,
   macEquals,
   open,
+  openBlob,
   parsePairingKey,
   RelayClient,
   RelayError,
   seal,
+  sealBlob,
   type Transport,
 } from "@tb/protocol";
 import { buildRelay, MAIL_TTL_MS } from "../src/app.js";
@@ -52,8 +55,10 @@ async function setup(rateLimitPerMinute = 600) {
     rateLimitPerMinute,
     notifier: async (url) => void pings.push(url),
   });
-  const transport: Transport = async ({ method, path, body, headers }) => {
-    const res = await relay.app.inject({ method: method as "GET", url: path, payload: body || undefined, headers });
+  const transport: Transport = async ({ method, path, body, headers, binaryResponse }) => {
+    const payload = typeof body === "string" ? body || undefined : Buffer.from(body);
+    const res = await relay.app.inject({ method: method as "GET", url: path, payload, headers });
+    if (binaryResponse && res.statusCode === 200) return { status: 200, json: null, bytes: new Uint8Array(res.rawPayload) };
     return { status: res.statusCode, json: res.body ? JSON.parse(res.body) : null };
   };
   return { store, relay, transport };
@@ -131,6 +136,31 @@ describe.each(stores)("relay (%s store)", (_name, factory) => {
     expect(await b.client.mailbox()).toHaveLength(0);
     const usage = (await a.client.usage("2026-10-01", "2026-10-31")) as { rows: Array<{ messages: number; direction: string }> };
     expect(usage.rows).toEqual([expect.objectContaining({ messages: 1, direction: "out" })]);
+  });
+
+  it("stores encrypted attachment blobs for the recipient only, then deletes them on ack", async () => {
+    const { transport, store } = await setup();
+    const { a, b, connectionId } = await pair(transport);
+    const plain = new Uint8Array(300_000).map((_, i) => i % 251);
+    const blobId = crypto.randomUUID();
+    const sealed = sealBlob(connectionId, blobId, plain);
+
+    await a.client.putBlob(connectionId, blobId, sealed.data);
+    await a.client.putBlob(connectionId, blobId, sealed.data); // idempotent retry
+    // The sender cannot read it back; only the recipient can.
+    await expect(a.client.getBlob(connectionId, blobId)).rejects.toMatchObject({ code: "blob_not_found" });
+    const got = await b.client.getBlob(connectionId, blobId);
+    expect(Buffer.from(openBlob(connectionId, blobId, sealed.key, got)).equals(Buffer.from(plain))).toBe(true);
+    // Stored bytes are not the plaintext, and a blob opened under another id fails.
+    expect(Buffer.from((await store.getBlob(connectionId, blobId))!.data).includes(Buffer.from(plain.subarray(0, 64)))).toBe(false);
+    expect(() => openBlob(connectionId, crypto.randomUUID(), sealed.key, got)).toThrow(BlobDecryptError);
+
+    // Bandwidth is metered by size.
+    const usage = (await a.client.usage("2026-10-01", "2026-10-31")) as { rows: Array<{ bytes: number; direction: string }> };
+    expect(usage.rows.find((r) => r.direction === "out")!.bytes).toBe(sealed.data.length);
+
+    expect(await b.client.deleteBlob(connectionId, blobId)).toEqual({ ok: true });
+    await expect(b.client.getBlob(connectionId, blobId)).rejects.toMatchObject({ code: "blob_not_found" });
   });
 
   it("is idempotent on retransmits and rejects spoofed senders", async () => {

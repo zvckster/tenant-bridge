@@ -1,6 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import {
   AUTH_HEADERS,
+  BLOB_HARD_LIMIT,
   BundleSchema,
   EnvelopeSchema,
   INVITE_TTL_MS,
@@ -33,7 +34,7 @@ export interface RelayOptions {
 
 declare module "fastify" {
   interface FastifyRequest {
-    rawBody: string;
+    rawBody: string | Uint8Array;
     install?: Install;
   }
 }
@@ -86,6 +87,12 @@ export function buildRelay(opts: RelayOptions) {
     } catch {
       done(new HttpError(400, "invalid_json"), undefined);
     }
+  });
+
+  // Encrypted attachment blobs: raw bytes, larger limit on their own route.
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: BLOB_HARD_LIMIT + 1024 }, (req, body, done) => {
+    req.rawBody = new Uint8Array(body as Buffer);
+    done(null, req.rawBody);
   });
 
   app.setErrorHandler((err, _req, reply) => {
@@ -247,7 +254,7 @@ export function buildRelay(opts: RelayOptions) {
   app.delete<{ Params: { id: string } }>("/v1/connections/:id", async (req) => {
     const c = await connectionFor(req, req.params.id);
     await store.updateConnection(c.id, { status: "revoked", updatedAt: now() });
-    const dropped = await store.deleteMailForConnection(c.id);
+    const dropped = (await store.deleteMailForConnection(c.id)) + (await store.deleteBlobsForConnection(c.id));
     await ping(c.a === me(req).id ? c.b : c.a);
     return { ok: true, dropped };
   });
@@ -268,6 +275,44 @@ export function buildRelay(opts: RelayOptions) {
     await store.addUsage(utcDay(now()), c.id, sender.id, { messages: 1, bytes });
     await ping(recipient);
     return reply.code(202).send({ status: "queued" });
+  });
+
+  // ---- encrypted attachment blobs (SPEC §7.1): stored until the receiver deletes them, or TTL
+
+  const BlobParams = z.object({ id: z.uuid(), blobId: z.uuid() });
+
+  app.put<{ Params: { id: string; blobId: string } }>(
+    "/v1/connections/:id/blobs/:blobId",
+    { bodyLimit: BLOB_HARD_LIMIT + 1024 },
+    async (req, reply) => {
+      const { id, blobId } = parse(BlobParams, req.params);
+      const data = req.rawBody;
+      if (!(data instanceof Uint8Array) || data.length === 0) throw new HttpError(400, "octet_stream_required");
+      const sender = me(req);
+      const c = await connectionFor(req, id);
+      if (c.status !== "active") throw new HttpError(409, "connection_not_active");
+      if (data.length > BLOB_HARD_LIMIT) throw new HttpError(413, "blob_too_large");
+      await enforceQuota(sender, data.length);
+      const recipient = c.a === sender.id ? c.b : c.a;
+      const stored = await store.putBlob({ connectionId: c.id, blobId, sender: sender.id, recipient, bytes: data.length, storedAt: now() }, data);
+      if (!stored) return reply.code(200).send({ status: "duplicate" });
+      await store.addUsage(utcDay(now()), c.id, sender.id, { messages: 1, bytes: data.length });
+      return reply.code(201).send({ status: "stored" });
+    },
+  );
+
+  app.get<{ Params: { id: string; blobId: string } }>("/v1/connections/:id/blobs/:blobId", async (req, reply) => {
+    const { id, blobId } = parse(BlobParams, req.params);
+    const c = await connectionFor(req, id);
+    const blob = await store.getBlob(c.id, blobId);
+    if (!blob || blob.meta.recipient !== me(req).id) throw new HttpError(404, "blob_not_found");
+    return reply.code(200).header("content-type", "application/octet-stream").send(Buffer.from(blob.data));
+  });
+
+  app.delete<{ Params: { id: string; blobId: string } }>("/v1/connections/:id/blobs/:blobId", async (req) => {
+    const { id, blobId } = parse(BlobParams, req.params);
+    const c = await connectionFor(req, id);
+    return { ok: await store.deleteBlob(c.id, blobId, me(req).id) };
   });
 
   app.get<{ Querystring: { limit?: string } }>("/v1/mailbox", async (req) => {
@@ -324,9 +369,10 @@ export function buildRelay(opts: RelayOptions) {
   /** Deletes undelivered ciphertext older than the TTL and meters it as expired. */
   async function sweep() {
     const expired = await store.expireMail(now() - MAIL_TTL_MS);
+    const expiredBlobs = await store.expireBlobs(now() - MAIL_TTL_MS);
     await store.purgeExpired?.(now());
-    for (const e of expired) await store.addUsage(utcDay(now()), e.connectionId, e.sender, { expired: 1 });
-    return expired.length;
+    for (const e of [...expired, ...expiredBlobs]) await store.addUsage(utcDay(now()), e.connectionId, e.sender, { expired: 1 });
+    return expired.length + expiredBlobs.length;
   }
 
   return { app, sweep };

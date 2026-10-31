@@ -248,6 +248,8 @@ export interface Tenant {
   jira: FakeJira;
   kv: Map<string, KvEntry>;
   pingUrl: string;
+  /** Async events pushed to this installation's Forge queue, not yet run. */
+  jobs: Array<Record<string, unknown>>;
 }
 
 export const RELAY_URL = "https://relay.test";
@@ -266,10 +268,12 @@ const tenants = new Map<string, Tenant>();
 let current: Tenant | undefined;
 
 export function addTenant(name: string, site: string): Tenant {
-  const t = { name, jira: new FakeJira(site), kv: new Map(), pingUrl: `https://${name}.hello.atlassian-dev.net/ping` };
+  const t: Tenant = { name, jira: new FakeJira(site), kv: new Map(), pingUrl: `https://${name}.hello.atlassian-dev.net/ping`, jobs: [] };
   tenants.set(name, t);
   return t;
 }
+
+export const allTenants = () => [...tenants.values()];
 
 export function tenantByPing(url: string): Tenant | undefined {
   return [...tenants.values()].find((t) => t.pingUrl === url);
@@ -350,16 +354,33 @@ const api = {
   asUser: () => ({ requestJira }),
 };
 
-async function fetchMock(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) {
+async function fetchMock(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string | ArrayBuffer }) {
   if (!url.startsWith(RELAY_URL)) throw new Error(`egress not allowed in tests: ${url}`);
+  const body = init?.body;
   const res = await relay.app.inject({
     method: (init?.method ?? "GET") as "GET",
     url: url.slice(RELAY_URL.length),
     headers: init?.headers,
-    payload: init?.body,
+    payload: body instanceof ArrayBuffer ? Buffer.from(body) : body,
   });
-  return { status: res.statusCode, text: async () => res.body };
+  return {
+    status: res.statusCode,
+    text: async () => res.body,
+    arrayBuffer: async () => new Uint8Array(res.rawPayload).slice().buffer,
+  };
 }
+
+// ---------------------------------------------------------------- @forge/events mock
+
+class QueueMock {
+  constructor(readonly params: { key: string }) {}
+  async push(events: { body: Record<string, unknown> } | Array<{ body: Record<string, unknown> }>) {
+    for (const e of Array.isArray(events) ? events : [events]) ctx().jobs.push(e.body);
+    return { jobId: crypto.randomUUID() };
+  }
+}
+
+export const eventsMock = { Queue: QueueMock };
 
 export const apiMock = {
   default: api,

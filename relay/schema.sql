@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS mailbox (
 CREATE INDEX IF NOT EXISTS mailbox_recipient ON mailbox (recipient, stored_at);
 CREATE INDEX IF NOT EXISTS mailbox_ttl ON mailbox (stored_at);
 
+-- Encrypted attachment blobs (unreadable by the relay), deleted on receiver ack or TTL.
+CREATE TABLE IF NOT EXISTS blobs (
+  connection_id uuid NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+  blob_id       uuid NOT NULL,
+  sender        uuid NOT NULL,
+  recipient     uuid NOT NULL,
+  bytes         bigint NOT NULL,
+  data          bytea NOT NULL,
+  stored_at     timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (connection_id, blob_id)
+);
+CREATE INDEX IF NOT EXISTS blobs_ttl ON blobs (stored_at);
+
 -- Metadata only, aggregated per UTC day. Kept 13 months for billing.
 CREATE TABLE IF NOT EXISTS usage_daily (
   day           date NOT NULL,

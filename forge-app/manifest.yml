@@ -24,7 +24,18 @@ modules:
     - key: tb-tick
       function: on-tick
       interval: fiveMinute
+  consumer:
+    - key: tb-jobs-consumer
+      queue: tb-jobs
+      resolver:
+        function: job-worker
+        method: run
   function:
+    - key: job-worker
+      handler: index.jobs
+      timeoutSeconds: 900
+      runtime:
+        memoryMB: 1024
     - key: resolver
       handler: index.handler
     - key: on-issue-event

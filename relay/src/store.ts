@@ -43,6 +43,16 @@ export interface MailItem {
   storedAt: number;
 }
 
+/** An encrypted attachment waiting for the receiver. The relay cannot read it. */
+export interface BlobMeta {
+  connectionId: string;
+  blobId: string;
+  sender: string;
+  recipient: string;
+  bytes: number;
+  storedAt: number;
+}
+
 /** Daily metadata only: never content. */
 export interface UsageRow {
   day: string; // YYYY-MM-DD (UTC)
@@ -86,6 +96,14 @@ export interface Store {
   /** Remembers a request nonce; returns false if it was already seen. `now` is the relay clock. */
   useNonce(installId: string, nonce: string, expiresAt: number, now: number): Promise<boolean>;
 
+  /** Returns false if the blob already exists (uploads are idempotent). */
+  putBlob(meta: BlobMeta, data: Uint8Array): Promise<boolean>;
+  getBlob(connectionId: string, blobId: string): Promise<{ meta: BlobMeta; data: Uint8Array } | undefined>;
+  deleteBlob(connectionId: string, blobId: string, recipient: string): Promise<boolean>;
+  deleteBlobsForConnection(connectionId: string): Promise<number>;
+  /** Removes blobs stored before `cutoff`; returns their metadata for metering. */
+  expireBlobs(cutoff: number): Promise<BlobMeta[]>;
+
   /** Optional housekeeping (expired nonces), run with the TTL sweep. */
   purgeExpired?(now: number): Promise<void>;
 }
@@ -100,6 +118,37 @@ export class MemoryStore implements Store {
   private mail = new Map<string, MailItem>();
   private usage = new Map<string, UsageRow>();
   private nonces = new Map<string, number>();
+  private blobs = new Map<string, { meta: BlobMeta; data: Uint8Array }>();
+
+  async putBlob(meta: BlobMeta, data: Uint8Array) {
+    const k = `${meta.connectionId}:${meta.blobId}`;
+    if (this.blobs.has(k)) return false;
+    this.blobs.set(k, { meta, data });
+    return true;
+  }
+  async getBlob(connectionId: string, blobId: string) {
+    return this.blobs.get(`${connectionId}:${blobId}`);
+  }
+  async deleteBlob(connectionId: string, blobId: string, recipient: string) {
+    const k = `${connectionId}:${blobId}`;
+    if (this.blobs.get(k)?.meta.recipient !== recipient) return false;
+    return this.blobs.delete(k);
+  }
+  async deleteBlobsForConnection(connectionId: string) {
+    let n = 0;
+    for (const [k, b] of this.blobs) if (b.meta.connectionId === connectionId && this.blobs.delete(k)) n++;
+    return n;
+  }
+  async expireBlobs(cutoff: number) {
+    const out: BlobMeta[] = [];
+    for (const [k, b] of this.blobs) {
+      if (b.meta.storedAt < cutoff) {
+        this.blobs.delete(k);
+        out.push(b.meta);
+      }
+    }
+    return out;
+  }
 
   async putInstall(i: Install) {
     this.installs.set(i.id, i);

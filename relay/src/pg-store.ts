@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import pg from "pg";
 import type { Bundle, Channel, Envelope } from "@tb/protocol";
-import type { Connection, Install, InviteRecord, MailItem, Store, UsageRow } from "./store.js";
+import type { BlobMeta, Connection, Install, InviteRecord, MailItem, Store, UsageRow } from "./store.js";
 
 const ms = (col: string) => `(extract(epoch from ${col}) * 1000)::bigint AS ${col}`;
 const ts = (i: number) => `to_timestamp($${i}::double precision / 1000.0)`;
@@ -162,6 +162,55 @@ export class PgStore implements Store {
       [cutoff],
     );
     return r.rows.map((row) => ({ recipient: row.recipient, bytes: row.bytes, connectionId: row.connection_id, sender: row.sender }));
+  }
+
+  // ---- blobs (ciphertext only)
+
+  private toBlobMeta(row: any): BlobMeta {
+    return {
+      connectionId: row.connection_id,
+      blobId: row.blob_id,
+      sender: row.sender,
+      recipient: row.recipient,
+      bytes: Number(row.bytes),
+      storedAt: Number(row.stored_at),
+    };
+  }
+
+  async putBlob(m: BlobMeta, data: Uint8Array) {
+    const r = await this.pool.query(
+      `INSERT INTO blobs (connection_id, blob_id, sender, recipient, bytes, data, stored_at)
+       VALUES ($1, $2, $3, $4, $5, $6, ${ts(7)}) ON CONFLICT DO NOTHING`,
+      [m.connectionId, m.blobId, m.sender, m.recipient, m.bytes, Buffer.from(data), m.storedAt],
+    );
+    return r.rowCount === 1;
+  }
+
+  async getBlob(connectionId: string, blobId: string) {
+    const r = await this.pool.query(
+      `SELECT connection_id, blob_id, sender, recipient, bytes, data, ${ms("stored_at")} FROM blobs WHERE connection_id = $1 AND blob_id = $2`,
+      [connectionId, blobId],
+    );
+    const row = r.rows[0];
+    return row ? { meta: this.toBlobMeta(row), data: new Uint8Array(row.data as Buffer) } : undefined;
+  }
+
+  async deleteBlob(connectionId: string, blobId: string, recipient: string) {
+    const r = await this.pool.query(`DELETE FROM blobs WHERE connection_id = $1 AND blob_id = $2 AND recipient = $3`, [connectionId, blobId, recipient]);
+    return r.rowCount === 1;
+  }
+
+  async deleteBlobsForConnection(connectionId: string) {
+    const r = await this.pool.query(`DELETE FROM blobs WHERE connection_id = $1`, [connectionId]);
+    return r.rowCount ?? 0;
+  }
+
+  async expireBlobs(cutoff: number) {
+    const r = await this.pool.query(
+      `DELETE FROM blobs WHERE stored_at < ${ts(1)} RETURNING connection_id, blob_id, sender, recipient, bytes, ${ms("stored_at")}`,
+      [cutoff],
+    );
+    return r.rows.map((row) => this.toBlobMeta(row));
   }
 
   // ---- usage (metadata only)

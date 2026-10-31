@@ -82,6 +82,8 @@ export const PayloadSchema = z.discriminatedUnion("type", [
     size: z.number().int().nonnegative(),
     sha256: z.string(),
     chunks: z.number().int().positive(),
+    /** The encrypted file on the relay, and the key to open it. Present in current senders. */
+    blob: z.object({ id: z.uuid(), key: z.string().min(1) }).optional(),
   }),
   z.object({
     type: z.literal("attachment.chunk"),
