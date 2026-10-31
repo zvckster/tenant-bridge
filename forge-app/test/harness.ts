@@ -176,8 +176,9 @@ export class FakeJira {
         return { status: 204 };
       }
       if (sub === "properties" && method === "PUT") {
+        // Real Jira answers 200/201 with an empty body here.
         issue.properties[seg[6]!] = body;
-        return { status: 200, json: {} };
+        return { status: 200 };
       }
       if (sub === "transitions") {
         const others = Object.keys(STATUS_CATEGORY).filter((s) => s !== issue.status);
@@ -201,7 +202,7 @@ export class FakeJira {
         if (method === "PUT") {
           c.body = body.body;
           c.updated = new Date().toISOString();
-          return { status: 200, json: {} };
+          return { status: 200, json: { id: c.id } };
         }
         if (method === "DELETE") {
           issue.comments = issue.comments.filter((x) => x.id !== cid);

@@ -8,8 +8,10 @@ async function jira<T>(r: ReturnType<typeof route>, init?: { method?: string; bo
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: init?.body === undefined ? undefined : JSON.stringify(init.body),
   });
-  if (!res.ok) throw new Error(`Jira ${res.status} on ${init?.method ?? "GET"}: ${await res.text()}`);
-  return (res.status === 204 ? undefined : await res.json()) as T;
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Jira ${res.status} on ${init?.method ?? "GET"}: ${text}`);
+  // Several Jira writes (issue properties, transitions, updates) answer with an empty body.
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 const BASE_FIELDS = ["summary", "status", "issuetype", "description", "priority", "labels", "duedate", "project", "security", "updated"];

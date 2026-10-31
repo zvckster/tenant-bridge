@@ -198,6 +198,8 @@ async function applySnapshot(conn: ActiveConnection, p: PayloadOf<"ticket.snapsh
       ...fields,
       labels: [MIRROR_LABEL],
     });
+    // Link first, so a failure in any later step retries as an update, never a second create.
+    await saveMirror({ connectionId: conn.id, ref: p.ref, localIssueId: localId });
     await jira.setIssueProperty(localId, "tb.mirror", { ref: p.ref, connectionId: conn.id });
   }
   await saveMirror({ connectionId: conn.id, ref: p.ref, localIssueId: localId, hash: snapshotHash(p) });
